@@ -19,6 +19,8 @@
 #include "../build/test_null.h"
 #include "../build/hello_elf.h"
 #include "../fs/elf.h"
+#include "../gfx/primitives.h"
+#include "../gfx/font.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -331,33 +333,6 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
         d[i] = src[i];
 }
 
-/* ── Phase 9: Framebuffer fill (32 bpp, row-by-row to respect pitch) ── */
-
-static void framebuffer_fill_solid(uint32_t color)
-{
-    if (g_framebuffer.addr == 0 || g_framebuffer.bpp != 32) {
-        serial_write_string("FB: skip fill (addr=0 or bpp!=32)\n");
-        return;
-    }
-
-    uint32_t *fb = (uint32_t *)g_framebuffer.addr;
-    uint32_t pitch_dw = g_framebuffer.pitch / 4;
-
-    for (uint32_t y = 0; y < g_framebuffer.height; y++) {
-        for (uint32_t x = 0; x < g_framebuffer.width; x++) {
-            fb[y * pitch_dw + x] = color;
-        }
-    }
-
-    serial_write_string("FB: filled ");
-    serial_write_hex(g_framebuffer.width);
-    serial_write_string("x");
-    serial_write_hex(g_framebuffer.height);
-    serial_write_string(" with color 0x");
-    serial_write_hex(color);
-    serial_write_string("\n");
-}
-
 void kmain(unsigned int magic, void *multiboot_info) {
     serial_init();
     serial_write_string("Kumo OS booted.\n");
@@ -385,12 +360,45 @@ void kmain(unsigned int magic, void *multiboot_info) {
     kheap_init();
     heap_tests();
 
-    /* ── Phase 9: Map framebuffer + fill test pattern ── */
+    /* ── Phase 10: Map framebuffer + 2D drawing test ── */
     if (g_framebuffer.addr != 0) {
         uint32_t fb_bytes = g_framebuffer.height * g_framebuffer.pitch;
-        serial_write_string("\n=== Phase 9: Framebuffer ===\n");
+        serial_write_string("\n=== Phase 10: 2D Primitives + Font ===\n");
         paging_map_phys_range(g_framebuffer.addr, fb_bytes);
-        framebuffer_fill_solid(0x00335588);
+
+        /* Background fill */
+        uint32_t bg = make_color(0x20, 0x20, 0x30);
+        fill_rect(0, 0, g_framebuffer.width - 1, g_framebuffer.height - 1, bg);
+
+        /* 1. Yellow filled rectangle + red border */
+        uint32_t yellow = make_color(0xFF, 0xFF, 0x00);
+        uint32_t red    = make_color(0xFF, 0x00, 0x00);
+        fill_rect(400, 300, 200, 100, yellow);
+        draw_rect(396, 296, 208, 108, red);
+
+        /* 2. Cyan diagonal line */
+        uint32_t cyan = make_color(0x00, 0xFF, 0xFF);
+        draw_line(100, 100, 900, 650, cyan);
+
+        /* 3. White title text */
+        uint32_t white = make_color(0xFF, 0xFF, 0xFF);
+        draw_string(50, 30, "Kumo OS - Phase 10", white);
+
+        /* 4. Full printable ASCII character display */
+        char ascii_row[100];
+        int ci = 0;
+        for (int c = 0x20; c <= 0x7E; c++) {
+            ascii_row[ci++] = (char)c;
+        }
+        ascii_row[ci] = '\0';
+
+        uint32_t grey = make_color(0xAA, 0xAA, 0xAA);
+        draw_string(50, 60, ascii_row, grey);
+        draw_string(50, 78, "abcdefghijklmnopqrstuvwxyz", make_color(0x00, 0xCC, 0x00));
+        draw_string(50, 96, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", make_color(0x00, 0x88, 0xFF));
+        draw_string(50, 114, "0123456789 !@#$%^&*()[]{}<>", make_color(0xFF, 0x88, 0x00));
+
+        serial_write_string("FB: Phase 10 drawing complete.\n");
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }
