@@ -29,6 +29,18 @@ typedef struct {
     uint32_t base;
 } __attribute__((packed)) gdt_ptr_t;
 
+/* Segment selectors — RPL is pre-baked:
+   0x08 = GDT[1] RPL=0 (kernel code)
+   0x10 = GDT[2] RPL=0 (kernel data)
+   0x1B = GDT[3] RPL=3 (user code)   = 0x18 | 3
+   0x23 = GDT[4] RPL=3 (user data)   = 0x20 | 3  */
+
+#define KERNEL_CS 0x08
+#define KERNEL_DS 0x10
+#define USER_CS   0x1B
+#define USER_DS   0x23
+
 void gdt_init(void);
+void gdt_set_tss(uint32_t base, uint32_t limit);
 
 #endif

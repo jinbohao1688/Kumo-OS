@@ -101,3 +101,23 @@
 - [x] `pmm_alloc_contiguous_pages(count)` 新增（连续物理页分配，扫描位图找连续空闲位）
   - 后续阶段 5（用户态栈）、阶段 7（DMA 缓冲区）等需要连续物理内存的场景可复用
 - [x] **阶段 4 完成**：协作式轮转调度（环形链表 + switch_to + 独立内核栈）
+
+## 阶段 5：Ring0→Ring3 切换 + syscall ✓ (2026-07-11)
+
+- [x] GDT 扩展至 6 项（null + kcode/kdata + ucode/udata + TSS）
+  - User code: DPL=3, access=0xFA; User data: DPL=3, access=0xF2
+  - TSS: 系统段描述符 (access=0x89), selector=0x28
+- [x] TSS 初始化（`arch/x86/tss.c` — ss0/esp0 + LTR）
+- [x] 页面用户态权限（`paging_set_user_accessible()` — PDE.U/S + PTE.U/S + invlpg）
+- [x] Ring3 入口（`arch/x86/ring3.asm` — DS/ES/FS/GS→0x23 → iret 帧 → iret）
+- [x] int 0x80 syscall handler（`arch/x86/syscall.asm` + `syscall_dispatch.c`）
+  - 入口 DS/ES/FS/GS→0x10，出口→0x23，对称切换
+  - 用户代码页 14 字节 blob（mov eax,1; mov ebx,0xBEEF; int 0x80; jmp loop）
+- [x] **坑：PDE.U/S=0 导致 Ring3 指令取指 #PF** — PTD 的 U/S 也是 0，覆盖 PTE 设的 1
+- [x] 6 步 GDB 验证全通过：
+  - [1] DS/ES/FS/GS=0x23（进 Ring3 前）[2] iret 帧 5 字段核对
+  - [3] iret 后 CS=0x1B/SS=0x23/DS 不变/EIP=用户入口
+  - [4] syscall 入口 DS=0x23/EAX=1 [5a] DS→0x10 [5b] DS→0x23（iret 前）
+  - [6] iret 回 Ring3，EIP 指向 int 0x80 下一条指令
+- [x] 20+ 轮 syscall 循环无崩溃，无 #PF
+- [x] **阶段 5 完成**：Ring0→Ring3 最小闭环（含两次特权级跨越的段寄存器处理）

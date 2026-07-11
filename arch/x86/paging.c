@@ -96,3 +96,28 @@ void paging_init(void)
      * through the identity mapping. */
     serial_write_string("Paging: enabled.\n");
 }
+
+void paging_set_user_accessible(uint32_t phys_addr)
+{
+    uint32_t pd_index = phys_addr >> 22;
+    uint32_t pt_index = (phys_addr >> 12) & 0x3FF;
+
+    pt_entry_t *pd = (pt_entry_t *)pd_phys;
+    if (!(pd[pd_index] & PAGE_P)) return;
+
+    /* The PDE's U/S bit governs the entire 4 MB region covered by this PT.
+       Both PDE and PTE must have U/S=1 for user-mode access to succeed. */
+    pd[pd_index] |= 0x4;   /* set U/S bit on PDE */
+
+    uint32_t pt_phys = pd[pd_index] & ~0xFFF;    /* PT physical base */
+    pt_entry_t *pt   = (pt_entry_t *)pt_phys;     /* identity-mapped: vaddr == paddr */
+
+    pt[pt_index] |= 0x4;   /* set U/S bit on PTE */
+
+    /* Flush TLB for this page */
+    __asm__ volatile("invlpg %0" : : "m"(*(volatile uint8_t *)phys_addr));
+
+    serial_write_string("Paging: user-accessible page ");
+    serial_write_hex(phys_addr);
+    serial_write_string("\n");
+}
