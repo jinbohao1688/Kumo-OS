@@ -50,7 +50,7 @@ $(ISO_OUT): $(KERNEL_ELF)
 
 # ── Link ──
 
-$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h
+$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # ── Assemble (each .asm → build/<name>.o) ──
@@ -72,7 +72,7 @@ $(BUILD_DIR)/irq.o: arch/x86/irq.asm | $(BUILD_DIR)
 
 # ── Compile C (each .c → build/<name>.o) ──
 
-$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/serial.o: drivers/serial.c drivers/serial.h | $(BUILD_DIR)
@@ -117,7 +117,7 @@ $(BUILD_DIR)/ring3.o: arch/x86/ring3.asm | $(BUILD_DIR)
 $(BUILD_DIR)/tss.o: arch/x86/tss.c arch/x86/tss.h arch/x86/gdt.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/syscall_dispatch.o: arch/x86/syscall_dispatch.c arch/x86/syscall.h sched/task.h fs/vfs.h drivers/serial.h | $(BUILD_DIR)
+$(BUILD_DIR)/syscall_dispatch.o: arch/x86/syscall_dispatch.c arch/x86/syscall.h arch/x86/paging.h sched/task.h fs/vfs.h mm/kheap.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/vfs.o: fs/vfs.c fs/vfs.h sched/task.h mm/kheap.h drivers/serial.h | $(BUILD_DIR)
@@ -143,3 +143,15 @@ $(BUILD_DIR)/test_ramfs.h: user/test_ramfs.asm | $(BUILD_DIR)
 $(BUILD_DIR)/shell.h: user/shell.asm | $(BUILD_DIR)
 	nasm -f bin $< -o $(BUILD_DIR)/shell.bin
 	xxd -i $(BUILD_DIR)/shell.bin > $@
+
+$(BUILD_DIR)/test_bad_ptr.h: user/test_bad_ptr.asm | $(BUILD_DIR)
+	nasm -f bin $< -o $(BUILD_DIR)/test_bad_ptr.bin
+	xxd -i $(BUILD_DIR)/test_bad_ptr.bin > $@
+
+$(BUILD_DIR)/test_boundary.h: user/test_boundary.asm | $(BUILD_DIR)
+	nasm -f bin $< -o $(BUILD_DIR)/test_boundary.bin
+	xxd -i $(BUILD_DIR)/test_boundary.bin > $@
+
+$(BUILD_DIR)/test_null.h: user/test_null.asm | $(BUILD_DIR)
+	nasm -f bin $< -o $(BUILD_DIR)/test_null.bin
+	xxd -i $(BUILD_DIR)/test_null.bin > $@

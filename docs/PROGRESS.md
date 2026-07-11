@@ -224,3 +224,61 @@ user/
   kernel/main.c      — +run_registry, run_register(), run_exec()
 build/
   shell.h            — shell.asm 编译产物（xxd -i 生成 C 数组）
+
+## 阶段 8a：清偿技术债（ADR-003 + ADR-004）✓ (2026-07-11)
+
+### ADR-003 — NULL 页 unmap
+
+- [x] `paging_unmap_null_page()` — 清除 PTE[0].P + invlpg on 0x0
+- [x] 接入 kmain：paging_init() → paging_unmap_null_page() → kheap_init()
+- [x] 验证：`test_null` 用户程序解引用 NULL 触发 #PF（Vector 0x0E, ErrCode 0x04）
+
+### ADR-004 — copy_from/to_user 用户态指针校验
+
+- [x] `page_is_user_accessible(vaddr)` — 内部函数，检查 PDE.U/S + PTE.U/S + PTE.P
+- [x] `is_user_accessible_range(vaddr, size)` — 遍历区间内所有页
+- [x] `copy_from_user(kernel_dst, user_src, size)` — 预验证 + memcpy
+- [x] `copy_to_user(user_dst, kernel_src, size)` — 预验证 + memcpy
+- [x] `copy_from_user_string(kbuf, user_ptr, max_len)` — 逐字节扫描，仅在跨越
+  4KB 页边界时验证新页，遇到 NUL 即停止
+
+### 6 个指针接受型 syscall 全部接入
+
+- [x] SYSCALL_OPEN — copy_from_user_string(path)
+- [x] SYSCALL_READ — kmalloc 内核缓冲区 → vfs_read → copy_to_user(user_buf)
+- [x] SYSCALL_WRITE — copy_from_user(user_buf) → vfs_write
+- [x] SYSCALL_READDIR — copy_from_user_string(path) + copy_to_user(name_buf)
+- [x] SYSCALL_RUN — copy_from_user_string(name)
+- [x] SYSCALL_WRITECONSOLE — copy_from_user(buf) → serial_putchar 逐字节输出
+
+### 新增测试程序（3 个）
+
+- [x] `user/test_null.asm` — NULL 解引用 → #PF
+- [x] `user/test_bad_ptr.asm` — 传入内核地址 0x100000 给 OPEN，应被拦截返回 -1
+- [x] `user/test_boundary.asm` — 路径 "/x" 放在页面偏移 0xFFD，逐字节扫描应成功
+- [x] 四组测试全部通过（回归/恶意指针拦截/NULL #PF/页边界字符串）
+
+### Bug 修复
+
+- [x] **shell.asm: strcmp_word 比较顺序** — `cmp dl, 0; je .check_end` 移到
+  `cmp al, dl; jne .no_match` 之前。旧代码在命令字符串结束时（dl=NUL），
+  若用户输入后跟空格，会直接跳到 .no_match 而不会检查空格是否合法。
+  阶段 7 只测过 help/ls 两个无参数命令，此 bug 直到阶段 8a 才暴露。
+
+### 阶段 8a 文件清单
+
+```
+arch/x86/
+  paging.h           — +5 个新函数声明
+  paging.c           — +6 个新函数实现
+  syscall_dispatch.c — 6 个 syscall case 全部改写为校验模式
+user/
+  test_null.asm      — NULL 解引用测试
+  test_bad_ptr.asm   — 恶意指针拦截测试
+  test_boundary.asm  — 页边界字符串测试
+kernel/
+  main.c             — +paging_unmap_null_page() 调用, +3 个测试程序注册
+docs/
+  decisions.md       — ADR-003/ADR-004 标记已实现
+  phase-notes.md     — +Phase 8a 踩坑记录（strcmp_word 比较顺序）
+

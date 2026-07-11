@@ -200,10 +200,10 @@ strcmp_word:
 .cmp_loop:
     mov  al, [ebx + ecx]
     mov  dl, [esi + ecx]
-    cmp  al, dl
-    jne  .no_match
     cmp  dl, 0
     je   .check_end             ; command string ended — check line
+    cmp  al, dl
+    jne  .no_match
     inc  ecx
     jmp  .cmp_loop
 .check_end:

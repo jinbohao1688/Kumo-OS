@@ -2,6 +2,8 @@
 #include "../../drivers/serial.h"
 #include "../../sched/task.h"
 #include "../../fs/vfs.h"
+#include "../../mm/kheap.h"
+#include "paging.h"
 
 /* run_exec — defined in kernel/main.c (run registry) */
 extern int run_exec(const char *name);
@@ -22,17 +24,42 @@ uint32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
         task_yield();
         return 0;
 
-    case SYSCALL_OPEN:
-        /* FIXME: validate user pointer a1 (path) */
-        return (uint32_t)vfs_open((const char *)a1, (int)a2);
+    case SYSCALL_OPEN: {
+        char kpath[256];
+        if (copy_from_user_string(kpath, (const char *)a1, sizeof(kpath)) != 0)
+            return (uint32_t)-1;
+        return (uint32_t)vfs_open(kpath, (int)a2);
+    }
 
-    case SYSCALL_READ:
-        /* FIXME: validate user buffer a2 */
-        return (uint32_t)vfs_read((int)a1, (uint8_t *)a2, a3);
+    case SYSCALL_READ: {
+        uint32_t size = a3;
+        if (size == 0) return 0;
+        uint8_t *kbuf = (uint8_t *)kmalloc(size);
+        if (!kbuf) return (uint32_t)-1;
+        int n = vfs_read((int)a1, kbuf, size);
+        if (n > 0) {
+            if (copy_to_user((void *)a2, kbuf, (uint32_t)n) != 0) {
+                kfree(kbuf);
+                return (uint32_t)-1;
+            }
+        }
+        kfree(kbuf);
+        return (uint32_t)n;
+    }
 
-    case SYSCALL_WRITE:
-        /* FIXME: validate user buffer a2 */
-        return (uint32_t)vfs_write((int)a1, (const uint8_t *)a2, a3);
+    case SYSCALL_WRITE: {
+        uint32_t size = a3;
+        if (size == 0) return 0;
+        uint8_t *kbuf = (uint8_t *)kmalloc(size);
+        if (!kbuf) return (uint32_t)-1;
+        if (copy_from_user(kbuf, (const void *)a2, size) != 0) {
+            kfree(kbuf);
+            return (uint32_t)-1;
+        }
+        int n = vfs_write((int)a1, kbuf, size);
+        kfree(kbuf);
+        return (uint32_t)n;
+    }
 
     case SYSCALL_CLOSE:
         return (uint32_t)vfs_close((int)a1);
@@ -43,26 +70,41 @@ uint32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
          * tasks call it, they will race for serial input bytes. */
         return (uint32_t)serial_poll_char();
 
-    case SYSCALL_READDIR:
-        /* a1 = path ptr, a2 = index, a3 = name_buf ptr */
-        /* FIXME: validate user pointer a3 (name_buf) */
-        return (uint32_t)vfs_readdir((const char *)a1, a2, (char *)a3);
+    case SYSCALL_READDIR: {
+        char kpath[256];
+        char kname[64];
+        if (copy_from_user_string(kpath, (const char *)a1, sizeof(kpath)) != 0)
+            return (uint32_t)-1;
+        int ret = vfs_readdir(kpath, a2, kname);
+        if (ret != 0)
+            return (uint32_t)ret;
+        if (copy_to_user((char *)a3, kname, sizeof(kname)) != 0)
+            return (uint32_t)-1;
+        return 0;
+    }
 
-    case SYSCALL_RUN:
-        /* a1 = name ptr — launch a registered embedded test program */
-        /* FIXME: validate user pointer a1 */
-        return (uint32_t)run_exec((const char *)a1);
+    case SYSCALL_RUN: {
+        char kname[256];
+        if (copy_from_user_string(kname, (const char *)a1, sizeof(kname)) != 0)
+            return (uint32_t)-1;
+        return (uint32_t)run_exec(kname);
+    }
 
-    case SYSCALL_WRITECONSOLE:
-        /* a1 = buf ptr (user addr), a2 = length */
-        /* FIXME: validate user buffer a1 */
-        {
-            uint32_t n = 0;
-            const char *p = (const char *)a1;
-            for (uint32_t i = 0; i < a2; i++)
-                serial_putchar(p[i]);
-            return n;
+    case SYSCALL_WRITECONSOLE: {
+        uint32_t len = a2;
+        if (len == 0) return 0;
+        if (len > 4096) return (uint32_t)-1;   /* sanity cap */
+        uint8_t *kbuf = (uint8_t *)kmalloc(len);
+        if (!kbuf) return (uint32_t)-1;
+        if (copy_from_user(kbuf, (const void *)a1, len) != 0) {
+            kfree(kbuf);
+            return (uint32_t)-1;
         }
+        for (uint32_t i = 0; i < len; i++)
+            serial_putchar((char)kbuf[i]);
+        kfree(kbuf);
+        return len;
+    }
 
     default:
         serial_write_string("Syscall: unknown number ");

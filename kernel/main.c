@@ -14,6 +14,9 @@
 #include "../fs/ramfs.h"
 #include "../build/test_ramfs.h"
 #include "../build/shell.h"
+#include "../build/test_bad_ptr.h"
+#include "../build/test_boundary.h"
+#include "../build/test_null.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -277,6 +280,9 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
     paging_init();
 
+    /* ADR-003: unmap NULL page before any user code runs */
+    paging_unmap_null_page();
+
     kheap_init();
     heap_tests();
 
@@ -307,6 +313,24 @@ void kmain(unsigned int magic, void *multiboot_info) {
     paging_set_user_accessible(ramfs_test_page);
     copy_code(ramfs_test_page, build_test_ramfs_bin, build_test_ramfs_bin_len);
     run_register("ramfs_test", ramfs_test_page);
+
+    /* ADR-004: bad-pointer test */
+    uint32_t bad_ptr_page = pmm_alloc_page();
+    paging_set_user_accessible(bad_ptr_page);
+    copy_code(bad_ptr_page, build_test_bad_ptr_bin, build_test_bad_ptr_bin_len);
+    run_register("bad_ptr", bad_ptr_page);
+
+    /* ADR-004: page-boundary string test */
+    uint32_t boundary_page = pmm_alloc_page();
+    paging_set_user_accessible(boundary_page);
+    copy_code(boundary_page, build_test_boundary_bin, build_test_boundary_bin_len);
+    run_register("boundary", boundary_page);
+
+    /* ADR-003: NULL deref test (runs last — triggers #PF + halt) */
+    uint32_t null_page = pmm_alloc_page();
+    paging_set_user_accessible(null_page);
+    copy_code(null_page, build_test_null_bin, build_test_null_bin_len);
+    run_register("null_test", null_page);
 
     /* Shell user task */
     uint32_t shell_page = pmm_alloc_page();
