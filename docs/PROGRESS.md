@@ -87,3 +87,17 @@
   - 初始 16 页（~64KB），按需扩展（通过 pmm_alloc_page()）
   - 6 项测试全覆盖：basic/kfree/write/forward/backward/heap expansion (200×500B, 触发 10 次扩展)
 - [x] **阶段 3 完成**：内存管理子系统（Multiboot 解析 → PMM 位图 → 恒等分页 → 内核堆）
+
+## 阶段 4：多任务协作调度 ✓ (2026-07-11)
+
+- [x] TCB 结构体（`sched/task.h`，esp 在偏移 0，id/state/next 共 16 字节）
+- [x] 上下文切换（`sched/switch.asm`，纯 NASM，push ebp/edi/esi/ebx → pop 对称）
+- [x] 调度器（`sched/task.c`：task_init/task_create/task_yield，环形链表轮转）
+  - idle 任务复用 boot_stack（16KB .bss），esp=0 哨兵在首次 yield 时填充
+  - 新任务内核栈：2 页 8KB 连续物理内存（pmm_alloc_contiguous_pages）
+  - task_create 插入环形链表（insert-after-current），g_next_id 顺序编号
+- [x] 初始栈布局 GDB 核对（5 字段 x/5xw，与偏移表 100% 一致，无 order-reversal bug）
+- [x] 3 测试任务 + idle 循环验证（80+ tick 无崩溃，C→B→A→idle 轮转稳定）
+- [x] `pmm_alloc_contiguous_pages(count)` 新增（连续物理页分配，扫描位图找连续空闲位）
+  - 后续阶段 5（用户态栈）、阶段 7（DMA 缓冲区）等需要连续物理内存的场景可复用
+- [x] **阶段 4 完成**：协作式轮转调度（环形链表 + switch_to + 独立内核栈）
