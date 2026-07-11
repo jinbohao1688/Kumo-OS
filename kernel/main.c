@@ -7,6 +7,7 @@
 #include "../mm/pmm.h"
 #include "../arch/x86/paging.h"
 #include "../mm/kheap.h"
+#include "../sched/task.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ──
  *
@@ -195,6 +196,38 @@ static void heap_tests(void)
     serial_write_string("=== All heap tests passed ===\n");
 }
 
+/* ── Phase 4: cooperative test tasks ── */
+
+static void task_a(void)
+{
+    for (;;) {
+        serial_write_string("[A");
+        serial_write_hex(task_current()->id);
+        serial_write_string("] ");
+        task_yield();
+    }
+}
+
+static void task_b(void)
+{
+    for (;;) {
+        serial_write_string("[B");
+        serial_write_hex(task_current()->id);
+        serial_write_string("] ");
+        task_yield();
+    }
+}
+
+static void task_c(void)
+{
+    for (;;) {
+        serial_write_string("[C");
+        serial_write_hex(task_current()->id);
+        serial_write_string("] ");
+        task_yield();
+    }
+}
+
 void kmain(unsigned int magic, void *multiboot_info) {
     serial_init();
     serial_write_string("Kumo OS booted.\n");
@@ -223,7 +256,18 @@ void kmain(unsigned int magic, void *multiboot_info) {
     serial_write_string("Enabling interrupts (sti)...\n");
     __asm__ volatile("sti");
 
+    /* ── Phase 4: multi-tasking ── */
+    serial_write_string("\n=== Phase 4: Cooperative multitasking ===\n");
+    task_init();
+    task_create(task_a);
+    task_create(task_b);
+    task_create(task_c);
+
+    serial_write_string("Entering idle loop (task_yield)...\n");
+
+    /* Idle loop — yield to next ready task, hlt when no other tasks */
     for (;;) {
+        task_yield();
         __asm__ volatile("hlt");
     }
 }

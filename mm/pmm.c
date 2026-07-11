@@ -83,6 +83,31 @@ uint32_t pmm_alloc_page(void)
     return 0;   /* out of memory */
 }
 
+uint32_t pmm_alloc_contiguous_pages(uint32_t count)
+{
+    if (count == 0 || count > free_pages) return 0;
+
+    uint32_t consecutive = 0;
+    uint32_t start_idx   = 0;
+
+    for (uint32_t i = 0; i < total_pages; i++) {
+        if (!(bitmap[i / 8] & (1 << (i % 8)))) {
+            if (consecutive == 0) start_idx = i;
+            consecutive++;
+            if (consecutive == count) {
+                for (uint32_t j = start_idx; j < start_idx + count; j++) {
+                    bitmap[j / 8] |= (1 << (j % 8));
+                    free_pages--;
+                }
+                return MANAGED_BASE + start_idx * PAGE_SIZE;
+            }
+        } else {
+            consecutive = 0;
+        }
+    }
+    return 0;   /* not enough contiguous pages */
+}
+
 uint32_t pmm_free_page_count(void)
 {
     return free_pages;
