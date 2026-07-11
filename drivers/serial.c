@@ -72,3 +72,20 @@ void serial_write_hex(uint32_t n)
         serial_write_char(hex[(n >> (i * 4)) & 0xF]);
     }
 }
+
+/* Raw single-char output — no LF→CR+LF conversion, no prefix.
+ * Used by WRITECONSOLE syscall (shell output). */
+void serial_putchar(char c)
+{
+    while (!serial_is_tx_empty())
+        ;
+    outb(COM1_PORT, c);
+}
+
+/* Non-blocking poll for input.  Returns -1 if no data available. */
+int serial_poll_char(void)
+{
+    if (inb(COM1_PORT + 5) & 0x01)
+        return (int)inb(COM1_PORT);
+    return -1;
+}

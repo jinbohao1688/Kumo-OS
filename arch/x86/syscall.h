@@ -4,7 +4,16 @@
 #include <stdint.h>
 
 /* Syscall numbers */
-#define SYSCALL_PRINT  1    /* print a message to serial */
+#define SYSCALL_PRINT       1   /* print debug msg to serial (arg=value) */
+#define SYSCALL_YIELD       2   /* yield CPU */
+#define SYSCALL_OPEN        3   /* fd = open(path, flags) */
+#define SYSCALL_READ        4   /* n  = read(fd, buf, size) */
+#define SYSCALL_WRITE       5   /* n  = write(fd, buf, size) */
+#define SYSCALL_CLOSE       6   /* 0  = close(fd) */
+#define SYSCALL_READCHAR    7   /* char = readchar() — non-blocking, -1 if none */
+#define SYSCALL_READDIR     8   /* 0 = readdir(path, index, name_buf) */
+#define SYSCALL_RUN         9   /* task_id = run(name) — launch registered test */
+#define SYSCALL_WRITECONSOLE 10 /* n = writeconsole(buf, len) — raw serial output */
 
 /* C dispatcher — called by syscall_handler (asm stub).
    Returns value to be placed in EAX before returning to user mode. */

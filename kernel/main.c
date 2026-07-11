@@ -10,39 +10,27 @@
 #include "../sched/task.h"
 #include "../arch/x86/tss.h"
 #include "../arch/x86/syscall.h"
+#include "../fs/vfs.h"
+#include "../fs/ramfs.h"
+#include "../build/test_ramfs.h"
+#include "../build/shell.h"
 
-/* ── Initialization order (HARD dependency — do not reorder) ──
- *
- *   multiboot_parse()   → fills g_memory_map
- *   pmm_init()          → bitmap allocator (reads g_memory_map)
- *   paging_init()       → allocates PD + PTs from PMM, enables paging
- *   kheap_init()        → heap (allocates pages from PMM)
- *   __asm__("sti")      → only AFTER all memory subsystems are stable
- *
- * Reordering any of the first three will produce garbage page tables
- * or triple-fault on sti. */
+/* ── Initialization order (HARD dependency — do not reorder) ── */
 
 /* ── External asm symbols ── */
-extern void enter_ring3(uint32_t entry, uint32_t user_stack_top);
 extern void syscall_handler(void);
 
-/* ── User-mode test code (binary blob, copied to user code page) ──
+/* ── User-mode test code — loaded from user/test_ramfs.asm via build/test_ramfs.h ──
  *
- * Disassembly:
- *   loop:
- *     mov eax, 1          ; B8 01 00 00 00  — syscall number = 1 (print)
- *     mov ebx, 0xBEEF     ; BB EF BE 00 00  — arg1 = 0xBEEF
- *     int 0x80             ; CD 80           — trigger syscall
- *     jmp loop            ; EB F2           — jmp $-14 (back to offset 0)
+ * The binary (build_test_ramfs_bin) is position-independent; it uses
+ * call/pop to discover its runtime address.  Data (path, write buffer,
+ * read buffer) is embedded at the end of the binary.
  *
- * Total: 5 + 5 + 2 + 2 = 14 bytes */
-
-static const uint8_t user_test_code[] = {
-    0xB8, 0x01, 0x00, 0x00, 0x00,   /* mov $1, %eax */
-    0xBB, 0xEF, 0xBE, 0x00, 0x00,   /* mov $0xBEEF, %ebx */
-    0xCD, 0x80,                       /* int $0x80 */
-    0xEB, 0xF2,                       /* jmp back to offset 0 */
-};
+ * Logic:
+ *   open("/test", WRONLY) → write("hello", 5) → close
+ *   open("/test", RDONLY) → read(rbuf, 5) → close
+ *   PRINT each char of rbuf → should output "hello"
+ *   Loop with SYSCALL_YIELD */
 
 /* ── Test helpers ── */
 
@@ -206,79 +194,66 @@ static void heap_tests(void)
     serial_write_string("=== All heap tests passed ===\n");
 }
 
-/* ── Phase 5: Ring3 test ── */
+/* ── Phase 7: Run registry ── */
 
-static void ring3_test(void)
+#define RUN_MAX_ENTRIES 8
+
+typedef struct {
+    char name[32];
+    uint32_t code_page;
+} run_entry_t;
+
+static run_entry_t g_run_registry[RUN_MAX_ENTRIES];
+static int g_run_count = 0;
+
+static void run_register(const char *name, uint32_t code_page)
 {
-    serial_write_string("\n=== Phase 5: Ring0 → Ring3 transition ===\n");
+    if (g_run_count >= RUN_MAX_ENTRIES) return;
+    int i;
+    for (i = 0; name[i] && i < 31; i++)
+        g_run_registry[g_run_count].name[i] = name[i];
+    g_run_registry[g_run_count].name[i] = 0;
+    g_run_registry[g_run_count].code_page = code_page;
+    g_run_count++;
 
-    /* 1. Allocate user code page (1 page = 4096 bytes) */
-    uint32_t user_code_page = pmm_alloc_page();
-    if (!user_code_page) {
-        serial_write_string("Ring3: ERROR — cannot alloc user code page\n");
-        return;
+    serial_write_string("Run: registered '");
+    serial_write_string((char *)name);
+    serial_write_string("' at ");
+    serial_write_hex(code_page);
+    serial_write_string("\n");
+}
+
+int run_exec(const char *name)
+{
+    for (int i = 0; i < g_run_count; i++) {
+        int match = 1;
+        for (int j = 0; j < 32; j++) {
+            if (g_run_registry[i].name[j] != name[j]) { match = 0; break; }
+            if (name[j] == 0) break;
+        }
+        if (match) {
+            task_t *t = task_create_user(g_run_registry[i].code_page, name[0]);
+            if (t) {
+                serial_write_string("Run: launched '");
+                serial_write_string((char *)name);
+                serial_write_string("' as task ");
+                serial_write_hex(t->id);
+                serial_write_string("\n");
+                return (int)t->id;
+            }
+            return -1;
+        }
     }
-    serial_write_string("Ring3: user code page = ");
-    serial_write_hex(user_code_page);
-    serial_write_string("\n");
+    return -1;
+}
 
-    /* 2. Allocate user stack page */
-    uint32_t user_stack_page = pmm_alloc_page();
-    if (!user_stack_page) {
-        serial_write_string("Ring3: ERROR — cannot alloc user stack page\n");
-        return;
-    }
-    serial_write_string("Ring3: user stack page = ");
-    serial_write_hex(user_stack_page);
-    serial_write_string("\n");
+/* ── Phase 7: Shell + embedded tests ── */
 
-    /* 3. Allocate kernel stack page for syscall handler (TSS.esp0) */
-    uint32_t kstack_page = pmm_alloc_page();
-    if (!kstack_page) {
-        serial_write_string("Ring3: ERROR — cannot alloc kernel stack page\n");
-        return;
-    }
-    uint32_t kstack_top = kstack_page + PAGE_SIZE;
-    serial_write_string("Ring3: kernel stack (TSS.esp0) page = ");
-    serial_write_hex(kstack_page);
-    serial_write_string(" top = ");
-    serial_write_hex(kstack_top);
-    serial_write_string("\n");
-
-    /* 4. Mark user pages as user-accessible (set U/S=1 in PTEs) */
-    paging_set_user_accessible(user_code_page);
-    paging_set_user_accessible(user_stack_page);
-
-    /* 5. Copy user test code to the code page */
-    uint8_t *code_dest = (uint8_t *)user_code_page;
-    for (uint32_t i = 0; i < sizeof(user_test_code); i++)
-        code_dest[i] = user_test_code[i];
-
-    serial_write_string("Ring3: copied ");
-    serial_write_hex(sizeof(user_test_code));
-    serial_write_string(" bytes of user code to ");
-    serial_write_hex(user_code_page);
-    serial_write_string("\n");
-
-    /* 6. Set TSS.esp0 = kernel stack top (for syscall handler) */
-    tss_set_esp0(kstack_top);
-    serial_write_string("Ring3: TSS.esp0 = ");
-    serial_write_hex(kstack_top);
-    serial_write_string("\n");
-
-    /* 7. Wire IDT[0x80] — syscall handler, DPL=3 */
-    extern void idt_set_gate(int vector, uint32_t handler_addr,
-                             uint16_t selector, uint8_t type_attr);
-    idt_set_gate(0x80, (uint32_t)&syscall_handler, KERNEL_CS, 0xEE);
-    /*                                    type_attr=0xEE:  P=1 DPL=3 GateType=0xE (32-bit intr gate) */
-    serial_write_string("Ring3: IDT[0x80] wired (DPL=3, intr gate)\n");
-
-    /* 8. Enter Ring3 — this call never returns */
-    serial_write_string("Ring3: jumping to user mode...\n");
-    uint32_t user_stack_top = user_stack_page + PAGE_SIZE;
-    enter_ring3(user_code_page, user_stack_top);
-
-    /* NOTREACHED — execution continues in Ring3 via user_test_code */
+static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
+{
+    uint8_t *d = (uint8_t *)dest_page;
+    for (uint32_t i = 0; i < len; i++)
+        d[i] = src[i];
 }
 
 void kmain(unsigned int magic, void *multiboot_info) {
@@ -290,32 +265,65 @@ void kmain(unsigned int magic, void *multiboot_info) {
     pic_remap();
     irq_init();
 
-    /* ── Phase 3: memory management ── */
-    multiboot_parse(magic, multiboot_info);   /* step 1/4 */
+    /* ── Memory management ── */
+    multiboot_parse(magic, multiboot_info);
 
-    pmm_init();                               /* step 2/4 */
+    pmm_init();
 
     uint32_t test_page = pmm_alloc_page();
     serial_write_string("PMM sanity: pmm_alloc_page() = ");
     serial_write_hex(test_page);
     serial_write_string("\n");
 
-    paging_init();                            /* step 3/4: identity-map + CR0.PG */
+    paging_init();
 
-    kheap_init();                             /* step 4/4: kernel heap */
+    kheap_init();
     heap_tests();
+
+    /* ── Phase 5: TSS + syscall gate ── */
+    tss_init();
+    idt_set_gate(0x80, (uint32_t)&syscall_handler, KERNEL_CS, 0xEE);
+    serial_write_string("Syscall: IDT[0x80] wired (DPL=3)\n");
+
+    /* ── VFS + RamFS ── */
+    vfs_init();
+    vfs_node_t *ramfs_root = ramfs_init();
+    if (ramfs_root) {
+        vfs_mount("/", ramfs_root);
+    } else {
+        serial_write_string("ERROR: ramfs_init failed!\n");
+        for (;;) { __asm__ volatile("hlt"); }
+    }
 
     /* ── Interrupts ── */
     serial_write_string("Enabling interrupts (sti)...\n");
     __asm__ volatile("sti");
 
-    /* ── Phase 5: TSS + Ring0→Ring3 + syscall ──
-     * (temporarily replaces Phase 4 idle loop; re-integration in Phase 6) */
-    tss_init();
-    ring3_test();
+    /* ── Phase 7: Shell + test program registry ── */
+    serial_write_string("\n=== Phase 7: Shell ===\n");
 
-    /* NOTREACHED — ring3_test calls enter_ring3() which never returns.
-     * If we do get here (e.g. syscall iret fails), halt. */
-    serial_write_string("ERROR: returned from ring3_test unexpectedly!\n");
-    for (;;) { __asm__ volatile("hlt"); }
+    /* Register embedded test programs (before creating shell) */
+    uint32_t ramfs_test_page = pmm_alloc_page();
+    paging_set_user_accessible(ramfs_test_page);
+    copy_code(ramfs_test_page, build_test_ramfs_bin, build_test_ramfs_bin_len);
+    run_register("ramfs_test", ramfs_test_page);
+
+    /* Shell user task */
+    uint32_t shell_page = pmm_alloc_page();
+    paging_set_user_accessible(shell_page);
+    copy_code(shell_page, build_shell_bin, build_shell_bin_len);
+
+    serial_write_string("Shell: code page = ");
+    serial_write_hex(shell_page);
+    serial_write_string(" (");
+    serial_write_hex(build_shell_bin_len);
+    serial_write_string(" bytes)\n");
+
+    task_init();
+    task_create_user(shell_page, 'S');   /* 'S' = Shell */
+
+    serial_write_string("Shell: entering idle/scheduler loop...\n");
+    for (;;) {
+        task_yield();
+    }
 }

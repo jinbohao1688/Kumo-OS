@@ -104,6 +104,8 @@
 
 ## 阶段 5：Ring0→Ring3 切换 + syscall ✓ (2026-07-11)
 
+### 5a — 核心机制 ✓ (2026-07-11)
+
 - [x] GDT 扩展至 6 项（null + kcode/kdata + ucode/udata + TSS）
   - User code: DPL=3, access=0xFA; User data: DPL=3, access=0xF2
   - TSS: 系统段描述符 (access=0x89), selector=0x28
@@ -112,12 +114,113 @@
 - [x] Ring3 入口（`arch/x86/ring3.asm` — DS/ES/FS/GS→0x23 → iret 帧 → iret）
 - [x] int 0x80 syscall handler（`arch/x86/syscall.asm` + `syscall_dispatch.c`）
   - 入口 DS/ES/FS/GS→0x10，出口→0x23，对称切换
-  - 用户代码页 14 字节 blob（mov eax,1; mov ebx,0xBEEF; int 0x80; jmp loop）
-- [x] **坑：PDE.U/S=0 导致 Ring3 指令取指 #PF** — PTD 的 U/S 也是 0，覆盖 PTE 设的 1
-- [x] 6 步 GDB 验证全通过：
-  - [1] DS/ES/FS/GS=0x23（进 Ring3 前）[2] iret 帧 5 字段核对
-  - [3] iret 后 CS=0x1B/SS=0x23/DS 不变/EIP=用户入口
-  - [4] syscall 入口 DS=0x23/EAX=1 [5a] DS→0x10 [5b] DS→0x23（iret 前）
-  - [6] iret 回 Ring3，EIP 指向 int 0x80 下一条指令
-- [x] 20+ 轮 syscall 循环无崩溃，无 #PF
-- [x] **阶段 5 完成**：Ring0→Ring3 最小闭环（含两次特权级跨越的段寄存器处理）
+- [x] **坑：PDE.U/S=0 导致 Ring3 指令取指 #PF**
+- [x] 6 步 GDB 验证全通过（最小闭环，单个用户任务，全局共享内核栈）
+- [x] 20+ 轮 syscall 循环无崩溃
+
+### 5b — 多任务 + TSS.esp0 动态切换 ✓ (2026-07-11)
+
+- [x] TCB 增加 kernel_stack_top 字段（offset 0x10，`sched/task.h`）
+- [x] task_yield 中更新 TSS.esp0 → next->kernel_stack_top（仅非零值，跳过 idle）
+- [x] task_create_user() 创建独立内核栈的 Ring3 任务
+  - 2-page 内核栈（pmm_alloc_contiguous_pages(2)）+ 1-page 用户栈（pmm_alloc_page + mark user-accessible）
+  - 组合栈帧：callee-saved regs → return_to_ring3 → iret 帧（EIP/CS/EFLAGS/ESP/SS）
+- [x] return_to_ring3 trampoline（`arch/x86/ring3.asm` — DS/ES/FS/GS→0x23 → iret）
+- [x] SYSCALL_YIELD=2：用户态任务通过 syscall 主动让出 CPU
+  - syscall_dispatch 调用 task_yield()，task_yield 更新 TSS.esp0 后 switch_to
+- [x] 2 用户任务 + idle 三轮转验证（A(0x41)/B(0x42) 交替打印，8 秒 80+ 轮无崩溃）
+- [x] GDB 验证：4 次 task_yield 断点，eax 与 g_tss.esp0 交替 0x14C000↔0x14F000，确认每次 switch_to 前 TSS.esp0 正确指向新任务内核栈顶
+- [x] **阶段 5 完成**：多任务 Ring0↔Ring3 完整闭环
+
+## 阶段 6：文件系统 + 系统调用（ramfs）✓ (2026-07-11)
+
+- [x] VFS 抽象层（`fs/vfs.h` + `fs/vfs.c`）
+  - vfs_node_t（文件/目录节点，含 ops 函数指针表）
+  - vfs_file_t（打开文件描述，含 node + offset + flags）
+  - vfs_open/read/write/close — 路径解析 + fd 管理
+  - vfs_mount — 挂载文件系统根节点
+- [x] RamFS 实现（`fs/ramfs.h` + `fs/ramfs.c`）
+  - 树状结构（parent/children/next 链表）
+  - 文件内容存储在 kmalloc 缓冲区，write 时动态扩展
+  - 单层目录支持（`/filename`，尚不支持嵌套路径）
+- [x] 文件描述符集成到 TCB
+  - TCB 新增 `fd_table[16]`，task_init/task_create/task_create_user 全部清零
+  - vfs_open 扫描空闲槽位，vfs_close 释放
+- [x] 新增 4 个 syscall：SYSCALL_OPEN(3)/READ(4)/WRITE(5)/CLOSE(6)
+  - 参数传递：open(path,flags), read/write(fd,buf,size), close(fd)
+  - 所有接受用户指针的 syscall 已标记 `FIXME: validate user buffer`
+- [x] ADR-004：用户态指针校验记作已知技术债，待加载外部程序前实现 copy_from/to_user
+- [x] 最小闭环验证：open → write("hello") → close → open → read(5) → 输出 "hello"+bytes_read=5
+
+### 阶段 6 文件清单
+
+```
+fs/
+  vfs.h         — VFS 接口定义（vfs_node_t, vfs_file_t, vfs_node_ops_t）
+  vfs.c         — VFS 实现（路径解析, fd 表管理, open/read/write/close）
+  ramfs.h       — RamFS 内部结构（ramfs_node_t）
+  ramfs.c       — RamFS 实现（create, lookup, read, write — 内嵌 ops 回调）
+user/
+  test_ramfs.asm — 用户态测试程序（call/pop 位置无关，271 字节）
+```
+
+## 阶段 7：Shell + 用户态命令 ✓ (2026-07-11)
+
+- [x] Shell 用户态程序（`user/shell.asm`，1604 字节，位置无关）
+  - 串口轮询输入（SYSCALL_READCHAR，非阻塞，无数据时 YIELD）
+  - 行编辑：回显 + backspace 处理（"\b \b" 序列）
+  - 行缓冲（128 字节），Enter 执行，跳过前导空格
+  - strcmp_word 命令匹配（word = 空格/NUL 分隔，前缀匹配拒绝——"helpx" 不匹配 "help"）
+- [x] 5 个内建命令
+  - `help` — 显示可用命令列表
+  - `ls` — READDIR 遍历根目录子节点
+  - `cat <file>` — open→read(128B chunks)→print→close
+  - `echo <text>` — 打印参数文本
+  - `run <name>` — 通过 SYSCALL_RUN 在 run_registry 中查找并启动注册的测试程序
+- [x] 新增 4 个 syscall
+  - SYSCALL_READCHAR(7) — serial_poll_char 封装，非阻塞，-1=无数据
+  - SYSCALL_READDIR(8) — vfs_readdir 封装
+  - SYSCALL_RUN(9) — run_exec 封装，查找 run_registry
+  - SYSCALL_WRITECONSOLE(10) — 逐字节 serial_putchar，无 LF→CR+LF 转换
+- [x] Run Registry 基础设施（`kernel/main.c`）
+  - 注册表 g_run_registry[8]，run_register(name, code_page)
+  - run_exec 按 name 查找并调用 task_create_user 创建新任务
+  - ramfs_test 已注册但未自动运行（需手动 `run ramfs_test`）
+- [x] 新增内核函数
+  - `serial_putchar(char c)` — 原始字节输出（无 CR+LF 转换）
+  - `serial_poll_char(void)` — 非阻塞轮询 COM1 输入
+  - `vfs_readdir(path, index, name_buf)` — VFS 层 readdir 封装
+- [x] **Bug 修复：strcmp_word 寄存器复用导致指针自我覆盖**
+  - `mov dl, [edx + ecx]` 覆盖 edx 低字节，后续迭代地址计算错误
+  - 修复：命令字符串指针改用 esi，dl 仅做临时数据寄存器
+  - 记入 phase-notes.md 作为"寄存器不能同时承担指针和临时数据两种角色"的可迁移经验
+- [x] **Bug 修复：dispatch 段编辑残留**
+  - 调试代码恢复时漏掉 `call cmd_help_handler; jmp main_loop`，导致 help 命令 fall-through 到 .try_ls
+  - 修复：补回 handler 调用，恢复完整控制流
+- [x] **环境踩坑：QEMU `-serial stdio` 管道输入首字节丢失**
+  - stdin 非终端时 QEMU 内部初始化消耗首字节，非内核 bug
+  - 规避：sleep 3 等待 QEMU 就绪后再发送数据
+- [x] 最小闭环验证通过：
+  - 提示符 `# ` 出现
+  - 输入回显（h→e→l→p 逐字输出）
+  - `help` → 显示全部 5 个命令和描述
+  - `ls` → 显示 `(empty)`（根目录无文件）
+  - tick 持续运行，多任务调度正常
+- [x] **阶段 7 完成**：用户态 Shell 完整可用，syscall 数量达到 10 个
+
+**阶段 0-7 主线路图全部完成** 🎉
+
+### 阶段 7 文件清单
+
+```
+user/
+  shell.asm          — Shell 用户态程序（1604 字节，位置无关）
+新增/修改的内核文件：
+  drivers/serial.c   — +serial_putchar(), +serial_poll_char()
+  drivers/serial.h   — 声明上述两个函数
+  fs/vfs.c           — +vfs_readdir()
+  arch/x86/syscall.h — +SYSCALL_READCHAR(7)/READDIR(8)/RUN(9)/WRITECONSOLE(10)
+  arch/x86/syscall_dispatch.c — +4 个新 syscall case
+  kernel/main.c      — +run_registry, run_register(), run_exec()
+build/
+  shell.h            — shell.asm 编译产物（xxd -i 生成 C 数组）

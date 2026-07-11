@@ -90,3 +90,147 @@ GDB stub 的实现层面的限制。
 
 不要为每个阶段重新发明一个连续分配变体——在需要更高级语义（如 buddy
 allocator 的按阶分配）之前，这个简单扫描接口足够覆盖当前需求。
+
+## Phase 5 踩坑
+
+### PDE.U/S=0 导致 Ring3 指令取指 #PF（error code=0x05）
+
+**日期**：2026-07-11
+
+**场景**：实现 `paging_set_user_accessible()` 时，只设置了 PTE.U/S=1，
+未设置 PDE.U/S。结果 Ring3 代码一执行就 #PF，error code=0x05
+（user-mode read, protection violation — 注意 32-bit non-PAE 模式下
+I/D bit 恒为 0，取指 fault 和数据 fault 的 error code 看起来完全一样）。
+
+**根因**：两级页表的权限是层级化的。PDE.U/S=0 意味着整个 4MB 区域是
+supervisor-only，覆盖其下所有 PTE 的 U/S 设置。即使 PTE.U/S=1，
+CPU 在 page walk 时先检查 PDE，发现 PDE.U/S=0 即触发 protection fault。
+
+**教训**：修改页表权限时必须同时检查 PDE 和 PTE 两级。单级修改后要用
+GDB 手动 `x/1xw` 检查两级页表项的值，不能只看 PTE。这个坑在切换到
+PAE（三级）或长模式（四级）时会变得更隐蔽——层级越深，遗漏某一级
+U/S 的概率越大。
+
+### switch_to + iret 组合栈帧设计
+
+**日期**：2026-07-11
+
+**背景**：一个新用户任务首次被调度时，switch_to 需要自然地过渡到
+return_to_ring3 trampoline，再 iret 到 Ring3。这三个机制（上下文切换、
+Ring3 返回、iret 特权级切换）消耗同一段栈空间，必须按顺序布局：
+
+```
+TCB.esp → [ebx/esi/edi/ebp]    ← switch_to 的 pop 序列
+          [return_to_ring3]      ← switch_to 的 ret 跳转目标
+          [EIP/CS/EFLAGS/ESP/SS] ← iret 帧（5 dwords）
+TSS.esp0 → kernel_stack_top
+```
+
+**关键约束**：
+1. switch_to 先 pop 4 个 callee-saved 寄存器，再 ret → 消耗 20 字节后
+   到达 iret 帧，所以 iret 帧从 TCB.esp+20 开始
+2. TCB.esp（switch_to 恢复点）≠ TSS.esp0（CPU 中断入口点）。
+   TCB.esp 是"上次切出时的保存点"，TSS.esp0 是内核栈绝对顶部。
+   对于新任务，TCB.esp = kstack_top - 40；TSS.esp0 = kstack_top
+3. task_yield 必须在 switch_to 之前更新 TSS.esp0，否则新任务运行期间
+   发生中断/syscall 时 CPU 会压栈到旧任务的内核栈（栈踩踏）
+
+**后续价值**：任何涉及"从调度器首次启动一个低特权级任务"的场景
+（进程 fork、信号处理、用户态线程），都需要设计类似的组合栈帧。
+核心原则是先确定最底层的 CPU 机制（iret/sysret）需要什么栈布局，
+再往上叠加调度器的 pop/ret 序列，自底向上构建。
+
+## Phase 7 踩坑
+
+### strcmp_word 寄存器复用导致自我覆盖（指针被数据操作破坏）
+
+**日期**：2026-07-11
+
+**场景**：Shell 的 `strcmp_word` 函数用于比较用户输入与已知命令字符串。
+函数接收两个指针：`ebx`=line_buf 地址，`edx`=命令字符串地址。
+循环内逐字节比较：
+
+```asm
+strcmp_word:
+    push edx          ; 保存 edx
+    xor  ecx, ecx
+.cmp_loop:
+    mov  al, [ebx + ecx]
+    mov  dl, [edx + ecx]   ; ← BUG: dl 是 edx 的低字节！
+    cmp  al, dl
+    ...
+    pop  edx
+    ret
+```
+
+`mov dl, [edx + ecx]` 将命令字符串的一个字节读入 `dl`——但 `dl` 正是
+`edx` 的低 8 位。第一次迭代（ecx=0）后，`edx` 的低字节被覆盖为字符值
+（如 'h'=0x68），后续迭代 `[edx + ecx]` 访问的地址不再是原始命令字符串
+地址，而是被破坏后的地址。函数末尾 `pop edx` 恢复了调用者的 edx，
+但在循环内部，edx 已经面目全非。
+
+**症状**：Shell 将所有命令（help/ls/cat/echo/run）都判为 "unknown command"。
+但 `puts`（用 `esi` 做字符串指针）正常输出 banner 和 prompt——说明 base
+address（ebp）是正确的，数据段引用的地址计算也是对的。问题只在 `strcmp_word`
+这一个函数内部。
+
+**修复**：将命令字符串指针从 `edx` 切换到 `esi`：
+```asm
+strcmp_word:
+    push esi
+    mov  esi, edx       ; esi = 命令字符串指针（不再用 edx 做索引）
+    xor  ecx, ecx
+.cmp_loop:
+    mov  al, [ebx + ecx]
+    mov  dl, [esi + ecx] ; dl 仍做临时数据寄存器，但 esi 不变
+    cmp  al, dl
+    ...
+    pop  esi
+    ret
+```
+
+**可迁移经验**：在 x86 汇编中，**一个寄存器不能同时身兼"地址指针"和
+"临时数据寄存器"两个角色**。`al/ah` 会破坏 `eax`，`dl/dh` 会破坏 `edx`，
+以此类推。当你写 `mov dl, [edx + offset]` 时，edx 在指令执行后就不再
+是原来的指针了。这个模式与阶段 2/4 中栈布局错位（push/pop 顺序不对
+导致结构体字段偏移量全部错位）属于同一类 bug——**资源复用时的隐式覆盖**。
+后续写任何涉及寄存器双重角色的汇编代码时，先在注释里标注每个寄存器的
+"角色"（指针 / 临时数据 / 循环计数器），确认没有角色冲突。
+
+### dispatch 段编辑残留导致 help 命令丢失
+
+**日期**：2026-07-11
+
+**场景**：调试过程中在 `.dispatch` 段加了一段 PRINT debug 代码，
+随后用 Edit 工具恢复原代码时，new_string 比 old_string 短，
+漏掉了 `call cmd_help_handler; jmp main_loop` 两行。
+结果 `.dispatch` 在 `jnz .try_ls` 之后直接落入了 `.try_ls` 标签，
+"help" 匹配成功后实际执行的是 "ls" 的处理逻辑（而 "ls" 匹配它又不匹配），
+一路 fall-through 到 `.unknown`。
+
+**教训**：Edit 工具按精确字符串替换，不会提示"替换后代码逻辑是否完整"。
+涉及控制流（if/else 分支、函数调用链）的编辑，替换后应肉眼确认
+每个分支都有正确的出口（jmp/ret/call + jmp）。
+
+### QEMU `-serial stdio` 在管道输入时丢失首字节
+
+**日期**：2026-07-11
+
+**场景**：用 `printf 'help\n' | qemu-system-i386 -serial stdio` 向
+虚拟机 COM1 串口发送输入时，guest 收到的第一个字节丢失（'h' 未到达），
+导致 "help" 变成 "elp"。
+
+**根因**：QEMU 的 `-serial stdio` 在 stdin 不是终端（isatty）时，
+内部初始化路径可能与终端模式不同，导致管道的第一个字节被内部消耗
+（可能是 termios 设置或缓冲区同步相关）。此为 QEMU 行为，非内核 bug。
+
+**规避方案**：
+1. 测试时在输入前加 `sleep 3`，等 QEMU/guest 完全就绪后再发送数据
+2. 或在输入前面加一个无意义的前导字符作为"牺牲字节"（`printf 'xhelp\n'`）
+3. 或使用 `-nographic`（其串口 multiplex 逻辑与 `-serial stdio` 不同，
+   在 echo pipe 测试中未见首字节丢失）
+4. 生产环境（真实硬件 / 终端直接连接）不受此问题影响
+
+**后续价值**：自动化测试脚本中如果通过管道向 QEMU 串口发送命令，
+务必在启动后加 `sleep N` 确保 QEMU 初始化完成，且第一个命令前
+可以发送一个无害的换行符作为"暖机"字符。

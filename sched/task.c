@@ -1,8 +1,12 @@
 #include "task.h"
 #include "../mm/kheap.h"
 #include "../mm/pmm.h"
+#include "../arch/x86/paging.h"
+#include "../arch/x86/tss.h"
 #include "../drivers/serial.h"
 #include <stddef.h>
+
+extern void return_to_ring3(void);
 
 /* ── Scheduler state ── */
 
@@ -17,10 +21,13 @@ static uint32_t g_next_id = 1;  /* 0 = idle */
 void task_init(void)
 {
     task_t *idle = (task_t *)kmalloc(sizeof(task_t));
-    idle->esp   = 0;            /* filled on first switch-out */
-    idle->id    = 0;
-    idle->state = TASK_RUNNING;
-    idle->next  = idle;         /* circular list of 1 */
+    idle->esp              = 0;   /* filled on first switch-out */
+    idle->id               = 0;
+    idle->state            = TASK_RUNNING;
+    idle->kernel_stack_top = 0;   /* idle is a kernel task — no ring3 stack switch */
+    idle->next             = idle;
+    for (int i = 0; i < MAX_FD_PER_TASK; i++)
+        idle->fd_table[i] = NULL;
 
     g_current = idle;
 
@@ -57,6 +64,8 @@ task_t *task_create(void (*entry)(void))
     t->esp    = (uint32_t)sp;
     t->id     = g_next_id++;
     t->state  = TASK_READY;
+    for (int i = 0; i < MAX_FD_PER_TASK; i++)
+        t->fd_table[i] = NULL;
 
     /* Insert after g_current in circular list */
     t->next        = g_current->next;
@@ -75,6 +84,87 @@ task_t *task_create(void (*entry)(void))
     return t;
 }
 
+/* ── task_create_user ──
+ * Create a Ring3 user task.  Allocates:
+ *   - 2-page kernel stack (for syscall/interrupt handling)
+ *   - 1-page user stack (accessible from Ring3)
+ * Builds a combined switch_to + iret frame so that when the scheduler
+ * picks this task for the first time, switch_to's `ret` jumps to
+ * return_to_ring3, which iret's into user mode. */
+
+task_t *task_create_user(uint32_t entry_addr, uint32_t id_char)
+{
+    /* ── Kernel stack (2 pages, contiguous) ── */
+    uint32_t kstack_base = pmm_alloc_contiguous_pages(2);
+    if (!kstack_base) {
+        serial_write_string("Task: ERROR — PMM out of memory for kernel stack\n");
+        return NULL;
+    }
+    uint32_t kstack_top = kstack_base + 2 * PAGE_SIZE;
+
+    /* ── User stack (1 page) ── */
+    uint32_t ustack_base = pmm_alloc_page();
+    if (!ustack_base) {
+        serial_write_string("Task: ERROR — PMM out of memory for user stack\n");
+        return NULL;
+    }
+    uint32_t ustack_top = ustack_base + PAGE_SIZE;
+
+    /* Mark user stack page as Ring3-accessible */
+    paging_set_user_accessible(ustack_base);
+
+    /* ── Build combined stack frame at kstack_top - 40 ──
+     *
+     * switch_to pops: ebx, esi, edi, ebp, then `ret` → return_to_ring3.
+     * return_to_ring3 does iret which pops: EIP, CS, EFLAGS, ESP, SS.
+     *
+     * Layout (10 dwords, low addr → high addr):
+     *   sp[0] = 0 (ebx)       sp[5] = entry_addr    (iret→EIP)
+     *   sp[1] = 0 (esi)       sp[6] = 0x1B          (iret→CS)
+     *   sp[2] = 0 (edi)       sp[7] = 0x202         (iret→EFLAGS, IF=1)
+     *   sp[3] = 0 (ebp)       sp[8] = ustack_top    (iret→ESP)
+     *   sp[4] = return_to_ring3  sp[9] = 0x23       (iret→SS)
+     */
+    uint32_t *sp = (uint32_t *)(kstack_top - 40);
+    sp[0] = 0;
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[3] = 0;
+    sp[4] = (uint32_t)&return_to_ring3;
+    sp[5] = entry_addr;
+    sp[6] = 0x1B;              /* USER_CS */
+    sp[7] = 0x202;             /* EFLAGS with IF=1 */
+    sp[8] = ustack_top;
+    sp[9] = 0x23;              /* USER_DS */
+
+    /* ── TCB ── */
+    task_t *t = (task_t *)kmalloc(sizeof(task_t));
+    t->esp              = (uint32_t)sp;
+    t->id               = g_next_id++;
+    t->state            = TASK_READY;
+    t->kernel_stack_top = kstack_top;
+    for (int i = 0; i < MAX_FD_PER_TASK; i++)
+        t->fd_table[i] = NULL;
+
+    /* Insert after g_current in circular list */
+    t->next         = g_current->next;
+    g_current->next = t;
+
+    serial_write_string("Task: created user id=");
+    serial_write_hex(t->id);
+    serial_write_string(" id_char=");
+    serial_write_hex(id_char);
+    serial_write_string(" entry=");
+    serial_write_hex(entry_addr);
+    serial_write_string(" kstack_top=");
+    serial_write_hex(kstack_top);
+    serial_write_string(" ustack_top=");
+    serial_write_hex(ustack_top);
+    serial_write_string("\n");
+
+    return t;
+}
+
 /* ── task_yield ──
  * Cooperative yield: save current context, round-robin to next ready task. */
 
@@ -88,6 +178,11 @@ void task_yield(void)
     old->state = TASK_READY;
     new->state = TASK_RUNNING;
     g_current  = new;
+
+    /* Update TSS.esp0 so that if the new task is a user task,
+     * ring3→ring0 transitions land on its private kernel stack. */
+    if (new->kernel_stack_top != 0)
+        tss_set_esp0(new->kernel_stack_top);
 
     switch_to(old, new);
 }

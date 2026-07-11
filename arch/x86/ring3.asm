@@ -41,3 +41,28 @@ enter_ring3:
 
     ; ── Step 3: Jump to Ring3 ──
     iret
+
+
+; ── return_to_ring3 — trampoline for new user tasks created by scheduler ──
+;
+; When a user task runs for the first time, switch_to's `ret` jumps here.
+; The iret frame (EIP/CS/EFLAGS/ESP/SS) is already on the kernel stack,
+; placed there by task_create_user().  We just need to set user data
+; segments and execute iret.
+;
+; Stack at this point (after switch_to popped ebx/esi/edi/ebp + ret):
+;   [esp+0x00] = user_entry      → iret pops EIP
+;   [esp+0x04] = 0x1B            → iret pops CS
+;   [esp+0x08] = 0x202           → iret pops EFLAGS
+;   [esp+0x0C] = user_stack_top  → iret pops ESP
+;   [esp+0x10] = 0x23            → iret pops SS
+
+global return_to_ring3
+
+return_to_ring3:
+    mov dx, 0x23
+    mov ds, dx
+    mov es, dx
+    mov fs, dx
+    mov gs, dx
+    iret
