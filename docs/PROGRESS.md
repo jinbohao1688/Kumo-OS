@@ -380,3 +380,149 @@ user/
 
 **阶段 0-8 完整功能链**：引导 → 中断/异常 → 内存管理(PMM+分页+堆) → 多任务调度 → Ring3 用户态 → syscall → VFS+RamFS → Shell → ELF 加载器执行外部程序
 
+## 阶段 9：显卡驱动基础（Framebuffer）第一步 ✓ (2026-07-11)
+
+### Multiboot2 Framebuffer tag 解析
+
+- [x] 请求标签（`boot/multiboot_header.asm`）：type=5, width/height/depth=0（GRUB 自选最佳模式）
+- [x] 响应标签（`mm/multiboot.c`）：type=8 解析，含 framebuffer_addr/pitch/width/height/bpp/type
+- [x] color_info 字段完整解析：red/green/blue 的 field_position + mask_size
+  - QEMU `-vga std` 32bpp 下确认 BGRA 布局：red pos=16, green pos=8, blue pos=0, 各 8 bit mask
+- [x] **Bug 修复：framebuffer_bpp 字段类型错误**
+  - 初版将 `framebuffer_bpp` 写成 `uint32_t`（4 字节），实际 GRUB 源码中为 `uint8_t`（1 字节）
+  - 导致后续所有 color_info 字段整体偏移 3 字节（red_field_position 读到 green_mask_size，依此类推）
+  - 修正为 `uint8_t` + `__attribute__((packed))`，六项 color_info 值与 QEMU 预期完全吻合
+
+### 跨范围物理内存映射
+
+- [x] `paging_map_phys_range(phys_addr, size)` — 扩展恒等映射覆盖 top_of_memory 之外的 MMIO 区域
+  - framebuffer 物理地址 0xFD000000 远在 128MB RAM 之上，不在初始 paging_init 覆盖范围
+  - 按需分配新页表（PDE on demand），PTE 逐页恒等映射（phys | P | RW，仅内核访问）
+  - 1024×768×32bpp = 3MB 精确映射，边界外 PTE 确认未映射
+- [x] GDB 验证：
+  - PDE[0x3F4] = 0x00150003 → PT phys=0x00150000, P=1, RW=1
+  - PTE[0] = 0xFD000003, PTE[1] = 0xFD001003 → 连续恒等映射
+  - PTE[768] = 0x00000000 → 帧缓冲范围外未映射，边界精确
+
+### 最小视觉验证
+
+- [x] `framebuffer_fill_solid(color)` — 逐行填充（尊重 pitch），32bpp 下工作
+- [x] 纯色 0x00335588 填充 1024×768，QEMU GUI 窗口显示深蓝灰色背景
+- [x] QEMU 命令切换：`-nographic` → `-serial stdio -vga std`（串口调试 + GUI 图形双通道）
+
+### 阶段 9 第一步文件清单
+
+```
+boot/
+  multiboot_header.asm  — +framebuffer 请求标签 (type=5, 20 bytes)
+mm/
+  multiboot.h           — +MULTIBOOT_TAG_FRAMEBUFFER(8), +multiboot_tag_framebuffer_t packed struct, +framebuffer_t + extern
+  multiboot.c           — +g_framebuffer 全局变量, +type=8 tag 解析 + color_info 串口打印
+arch/x86/
+  paging.h              — +paging_map_phys_range() 声明
+  paging.c              — +paging_map_phys_range() 实现（按需分配 PT + 恒等映射）
+kernel/
+  main.c                — +framebuffer_fill_solid(), 在 paging_init 后映射 FB + 填充纯色
+
+## 阶段 10：2D 绘图原语 + 字体渲染 ✓ (2026-07-11)
+
+### 绘图原语
+
+- [x] `put_pixel(x, y, packed_color)` — 所有绘图的唯一出口，边界检查（越界静默丢弃）
+  - 根据 bpp 选择写入宽度（32/24/16 bit），使用 pitch 计算行偏移
+- [x] `make_color(r, g, b)` — 通用位域打包，复用阶段 9 color_info 字段
+  - 对 QEMU stdvga BGRA 布局（red pos=16, green pos=8, blue pos=0, 各 8-bit mask），
+    产生 `0x00RRGGBB` 像素值；对其他布局同样正确
+- [x] `draw_line(x0, y0, x1, y1, color)` — Bresenham 整数直线算法
+  - 缓坡/陡坡自动分支，每步仅一次加法+比较
+- [x] `draw_rect(x, y, w, h, color)` — 空心矩形（四条线段，复用 draw_line）
+- [x] `fill_rect(x, y, w, h, color)` — 实心矩形（逐行写入，带 framebuffer 边界裁剪）
+
+### 自制 8×16 位图字体
+
+- [x] 95 个 ASCII 可打印字符（0x20 空格至 0x7E ~），每字符 16 bytes = 1520 bytes
+- [x] 设计规范：大写/数字 5px 宽 7px 高（rows 3-9），小写 x-height 5px（rows 6-10），
+  升笔至 row 3，降笔至 row 13，基线 row 12
+- [x] **无第三方数据依赖**——全部字符手工设计，零授权风险
+- [x] `draw_string(x, y, str, fg_color)` — 单色字符串渲染，支持换行符 \n
+- [x] 不可打印字符静默跳过，不作 crash
+
+### 验证
+
+- [x] **程序化像素采样**：9 个采样点（背景/标题/黄填充/红描边/青斜线/灰ASCII/绿小写/
+  蓝大写/橙数字）全部精确命中预期颜色
+- [x] **全字符集人工目视**：字体数据渲染为 ASCII 点阵图，逐字符核对基线对齐（底线
+  全部一致）、笔画连续性（无断裂）和可读性（无变形/粘连），95 字符全部通过
+- [x] QEMU 图形窗口一切正常，现有功能（Shell、ELF 加载器）回归无影响
+
+### 阶段 10 文件清单
+
+```
+gfx/
+  primitives.h     — put_pixel / draw_line / draw_rect / fill_rect / make_color 声明
+  primitives.c     — 上述函数实现（168 行）
+  font.h           — draw_string 声明 + 字体参数宏
+  font.c           — 95 字符 8×16 位图字体点阵 + draw_string 实现（232 行）
+kernel/
+  main.c           — 替换 Phase 9 纯色填充，改为 Phase 10 综合绘图测试
+Makefile           — +gfx/primitives.o / gfx/font.o 编译规则
+```
+
+## 阶段 11：抢占式调度 ✓ (2026-07-11)
+
+### 设计分析
+
+- [x] IDT 门类型查证：全部 256 个向量使用中断门 (0x8E)，CPU 进入时自动清 IF
+  - syscall `int 0x80` 同样使用中断门 (0xEE)，DPL=3 允许 Ring3 调用但 IF 同样清 0
+  - 结论：**所有内核代码路径（syscall/IRQ/异常）天然在 IF=0 下执行**
+- [x] 抢占安全性分析：唯一 IF=1 进入调度器的路径是 idle 循环（kmain `for(;;) task_yield()`）
+  - 其余路径（syscall YIELD、未来 IRQ0 调度的 task_yield）均已 IF=0
+  - 修复：`task_yield()` 开头加 `cli`，保护 switch_to 的 ESP 交换临界区
+- [x] IRQ0 汇编入口确认：`irq.asm` 已在 `irq_common_stub` 中使用 `pushad/popad` 完整保存/恢复
+  全部 8 个通用寄存器（EAX..EDI），与 ISR stub 规格一致，无需改造
+- [x] switch_to 栈深度无关性确认：`ret` 指令仅无条件跳到栈顶返回地址，不关心调用链深度
+  - yield 路径（4 层调用）和抢占路径（8 层调用）的恢复由 C 调用约定自然 unwind
+
+### 代码改动
+
+- [x] `sched/task.c:task_yield()` — 首行加 `__asm__ volatile("cli")`
+  - 保护 g_current 操作、TSS.esp0 更新、switch_to ESP 交换
+  - IF 恢复路径：用户任务通过 iret 恢复 IF=1，idle 循环 cli 无操作
+- [x] `arch/x86/irq_handler.c` — IRQ0 在 EOI 之后调用 `task_yield()`
+  - tick 计数保留，打印改为每 50 tick (~2.75s) 一次
+  - EOI 在 schedule() 之前发送，PIC 可锁存下一 tick
+- [x] `kernel/main.c` — `sti` 从中间位置移到 idle 循环之前
+  - 原因：sti 过早执行时 `task_init()` 尚未运行，g_current==NULL，irq_handler 调用
+    task_yield() 会解引用 NULL → #PF
+
+### 寄存器保存验证
+
+- [x] 创建 2 个专用测试程序（`user/regtest_a.asm`, `user/regtest_b.asm`）
+  - Task A 标记：EBX=0xBBBB ECX=0xCCCC EDX=0xDDDD ESI=0xEEEE EDI=0xFFFF EBP=0x1111
+  - Task B 标记：EBX=0x2222 ECX=0x3333 EDX=0x4444 ESI=0x5555 EDI=0x6666 EBP=0x7777
+  - 每轮循环验证 6 个寄存器 + SYSCALL_YIELD 让出 CPU
+- [x] 验证结果：250+ tick 运行，0 次 FAIL_A 或 FAIL_B
+  - pushad/popad 在抢占路径上正确保存/恢复所有通用寄存器
+  - 无跨任务寄存器值混叠
+
+### 功能回归测试
+
+- [x] Shell（help/ls/cat/run/exec）— 正常
+- [x] ELF 加载执行（hello_elf）— "Hello from ELF!" 正常
+- [x] ramfs_test（VFS open/write/read 闭环）— 正常
+- [x] 串口输入（`echo help | ...`）- 正常回显和命令执行
+
+### 阶段 11 文件清单
+
+```
+sched/
+  task.c              — task_yield() 加 cli 保护
+arch/x86/
+  irq_handler.c       — +task.h include, +IRQ0 调用 task_yield(), +tick 降频打印
+user/
+  regtest_a.asm       — Task A 寄存器验证程序（6 寄存器标记 + yield 循环）
+  regtest_b.asm       — Task B 寄存器验证程序（不同标记值）
+kernel/
+  main.c              — sti 移到 idle 循环之前, +Phase 11 regtest 任务注册和启动
+Makefile              — +regtest_a/regtest_b 编译规则
+```

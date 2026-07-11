@@ -306,3 +306,156 @@ strcmp_word:
 这次 argv[0] + tick 时序的双重区分方案，成本极低（一行代码不改，仅靠已有
 的 stack dump 和 tick 输出），但完全排除了"巧合成功"的混淆可能。
 
+## Phase 9 踩坑
+
+### multiboot_tag_framebuffer_t 结构体的 framebuffer_bpp 字段类型错误
+
+**日期**：2026-07-11
+
+**场景**：初版 `multiboot_tag_framebuffer_t` 将 `framebuffer_bpp` 写成
+`uint32_t`（4 字节），凭经验认为"bpp 是个整数字段，应该是 4 字节对齐"。
+实际 GRUB 的源码（`multiboot2.h`）中 `framebuffer_bpp` 是 `uint8_t`（1 字节），
+`framebuffer_type` 紧随其后（1 字节），然后是 `reserved`（2 字节）。
+
+**后果**：伪造的  4 字节 bpp 导致后续所有字段（framebuffer_type、reserved、
+red_field_position、red_mask_size、green_field_position、green_mask_size、
+blue_field_position、blue_mask_size）整体偏移 3 字节。`red_field_position`
+读到的实际是 `green_mask_size` 的值，`red_mask_size` 读到的是
+`blue_field_position`，以此类推全部错位。
+
+**这个 bug 在填充纯色的验证目标下完全测不出来**——因为纯色填充不依赖
+color_info 字段。要到阶段 10 字体渲染或后续需要根据 framebuffer_type
+正确处理颜色格式时，才会表现为"颜色不对但程序不崩溃"，而这种间接的症状
+比崩溃更难定位根因。
+
+**修复**：将 `framebuffer_bpp` 改为 `uint8_t`，结构体用
+`__attribute__((packed))` 确保编译器不插入填充字节。修复后逐字段核对
+GRUB 官方源码的偏移量：
+
+| 偏移 | 字段 | 大小 |
+|------|------|------|
+| 0 | type | u32 |
+| 4 | size | u32 |
+| 8 | framebuffer_addr | u64 |
+| 16 | framebuffer_pitch | u32 |
+| 20 | framebuffer_width | u32 |
+| 24 | framebuffer_height | u32 |
+| 28 | framebuffer_bpp | **u8** |
+| 29 | framebuffer_type | u8 |
+| 30 | reserved | u16 |
+| 32 | red_field_position | u8 |
+| 33 | red_mask_size | u8 |
+| 34 | green_field_position | u8 |
+| 35 | green_mask_size | u8 |
+| 36 | blue_field_position | u8 |
+| 37 | blue_mask_size | u8 |
+
+验证方式：串口打印 color_info 六项值，与 QEMU `-vga std` 32bpp 下的
+已知固定值对照——red: pos=16 mask=8, green: pos=8 mask=8,
+blue: pos=0 mask=8。六项全部命中，确认偏移量正确。
+
+**可迁移经验**：对外部规范定义的结构体（GRUB Multiboot、ACPI 表、ELF header
+等），**每一个字段的类型和大小都必须对照官方头文件源码逐字段核实，不能
+凭经验/直觉判断**。即使是看起来"显然应该是 4 字节对齐"的字段（如 bpp），
+在实际代码中也可能是更小的类型。`__attribute__((packed))` 是必要的防御，
+但前提是字段类型本身正确——packed 不会修复类型写错导致的偏移量错误。
+
+## Phase 10 踩坑
+
+### 程序化像素采样 vs 人工目视确认——两类验证覆盖不同的缺陷
+
+**日期**：2026-07-11
+
+**场景**：阶段 10 验证时，先用 Python 脚本对 QEMU 截图的指定坐标做像素采样，
+确认几何原语的填充色、描边色、对角线颜色、以及各文本行的前景色全部精确命中
+预期值。所有采样点通过后，若就此下结论"字体渲染正确"，会漏掉一类重要缺陷：
+字形内部 bit 排列错乱、笔画断裂、字符间粘连——这些问题只要字形区域内还有
+少量像素被点亮，稀疏坐标采样就可能命中"非背景色"这个判定，程序无法区分
+"字形长得像它应该有的样子"和"像素点亮了但字形是歪的"。
+
+**解决方案**：对全部 95 个字符做两轮验证——
+1. **程序化像素采样**：验证颜色、坐标、几何形状精确性（机器做，无遗漏）
+2. **人工目视扫过全字符集**：直接将字体数据渲染为 ASCII 点阵图，逐字符检查
+   基线对齐、笔画连续性和可读性（人眼做，覆盖"输出内容本身对不对"的判断）
+
+两类验证各司其职——自动化采样查"数据从 A 到 B 传对了没有"，人眼查"数据
+本身设计对了没有"。
+
+**可迁移经验**：凡是涉及"产出视觉内容"的阶段（字体渲染、图片解码、UI 控件
+绘制），除颜色/坐标采样外，必须补充人工目视确认。**"有输出"不等于"输出内容
+正确"**——这类缺陷编译器测不出、逻辑测试测不出、坐标采样也测不出，只有人眼
+能判断。类似阶段 7 `strcmp_word` 比较顺序 bug 一样，属于"能跑但不一定对的路径"。
+
+## 阶段 11：抢占式调度 (2026-07-11)
+
+### 核心洞察：中断门架构天然提供临界区保护
+
+阶段 11 最关键的发现是**不需要给每个内核数据结构单独加锁**，因为在当前架构下：
+
+1. 所有内核进入路径（IRQ 的中断门 0x8E、syscall 的中断门 0xEE、异常的中断门
+   0x8E）都自动清 IF，意味着全部内核代码在 IF=0 下执行
+2. 抢占的唯一触发点是 Ring3 用户态代码被定时器中断——此时没有任何内核数据
+   结构处于"正在被修改中"的状态
+3. 唯一的 IF=1 → 调度器路径是 idle 循环（`for(;;) task_yield()`），
+   仅需在 `task_yield()` 开头加一条 `cli` 即完成全部保护
+
+这与预想的"需要在 kmalloc/kfree/VFS/PMM 到处加 cli/sti"完全不同。实际经验是：
+**中断门选择的架构决策在阶段 2 就做对了，到阶段 11 直接受益。**
+
+### switch_to 对调用深度不敏感的机制理解
+
+`switch_to` 只做 5 件事：push 4 个 callee-saved 寄存器 → 保存当前 esp →
+加载下一个 esp → pop 4 个寄存器 + ret。
+
+**本质概括：`switch_to` 不是"切换任务"，而是"换了一根栈，然后 ret"。**
+任务切换 = 栈切换 = esp 换了一个值，然后 CPU 继续沿着新栈的返回地址链走。
+
+关键在 `ret` 指令的语义：**无条件弹出栈顶 4 字节作为 EIP**。它不检查调用深度，
+不关心栈上有几层调用帧，不依赖任何任务状态机或调度器元数据。
+
+而"栈顶那 4 字节是什么"完全由任务当初是怎么进入 switch_to 决定的——
+`call switch_to` 压入的返回地址永远指向 `task_yield` 里 `call switch_to` 的下一条
+指令。所以无论任务从哪条路径进入 task_yield，switch_to 恢复后一定先回到
+task_yield，然后 C 调用约定沿栈帧自然 unwind：
+
+| 任务当初的路径 | ret 回到 | 再返回到 | 最终收尾 |
+|---|---|---|---|
+| idle loop `for(;;) task_yield()` | task_yield | kmain 循环体 | 再次调用 task_yield |
+| syscall SYSCALL_YIELD | task_yield | syscall_dispatch → … → iret | Ring3, IF=1 |
+| IRQ0 抢占 | task_yield | irq_handler → popad → iret | Ring3, IF=1 |
+| 首次启动 (task_create_user) | return_to_ring3 | — | Ring3 entry |
+
+**三条路径的 unwind 链条表**完整对应了实际代码结构：
+
+1. **首次启动路径**：`task_create_user` 构造的栈上 sp[4]=return_to_ring3，
+   switch_to 的 ret 跳到 return_to_ring3 → iret 弹出 EIP/CS/EFLAGS/ESP/SS → Ring3
+
+2. **syscall yield 路径**：switch_to 保存的 esp 指向 task_yield 栈帧 → 恢复到
+   另一个同样从 task_yield 进入 switch_to 的任务 → ret → task_yield →
+   syscall_dispatch → syscall_handler (popa+iret) → Ring3
+
+3. **IRQ0 抢占路径**：栈上多了 pushad 帧 + err/vec + 硬件 iret 帧（4 层额外的
+   数据压在 task_yield 上面），但 switch_to 保存的 esp 指向 task_yield 的栈帧，
+   上面的一切完整不动。恢复时沿着 task_yield → irq_handler → irq_common_stub
+   (popad 恢复全部 8 个寄存器) → add esp,8 → iret → Ring3
+
+**这解释了为什么 4 条汇编指令就能实现上下文切换**，以及为什么同一个 switch_to
+对三种不同深度的调用链都不敏感。核心是栈的自描述性——每个栈帧自带返回地址，
+ret 链自然 unwrap，不需要 switch_to 知道它上面有几层、是什么。
+
+**可迁移经验**：阶段 12 如果在 switch_to 基础上做改造（如加 CR3 切换），插入点
+必须在 `mov esp, [eax]` 之后、`pop+ret` 之前——此时新任务的栈已加载但寄存器
+还未恢复，CR3 切换不会影响 pop 的目标寄存器，旧任务的 CR3 在 eax 中仍然可用。
+
+### sti 时机错误 → #PF 的教训
+
+初版将 `sti` 放在 `paging_init` 和 VFS 初始化之间（比 `task_init()` 早约 60 行），
+结果定时器中断触发时 `g_current == NULL`，`task_yield()` 解引用 NULL → #PF。
+
+当时考虑的逻辑是"早开中断让硬件尽早工作"，但忽略了**抢占式调度要求任务系统
+已初始化**这个前置条件。这是典型的初始化顺序依赖——跟阶段 4 把 `tss_init()` 放到
+`task_init()` 之前是同一类教训。
+
+**可迁移经验**：`sti` 的位置在抢占式调度系统中是关键决策点，必须放在所有依赖
+`g_current != NULL` 的代码路径之后。原则：**中断开启的时刻 = 系统已准备好接收中断
+并正确处理它们的时刻**，而不是"能开就尽早开"。

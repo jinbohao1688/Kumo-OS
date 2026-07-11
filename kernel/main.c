@@ -18,6 +18,8 @@
 #include "../build/test_boundary.h"
 #include "../build/test_null.h"
 #include "../build/hello_elf.h"
+#include "../build/regtest_a.h"
+#include "../build/regtest_b.h"
 #include "../fs/elf.h"
 #include "../gfx/primitives.h"
 #include "../gfx/font.h"
@@ -418,9 +420,9 @@ void kmain(unsigned int magic, void *multiboot_info) {
         for (;;) { __asm__ volatile("hlt"); }
     }
 
-    /* ── Interrupts ── */
-    serial_write_string("Enabling interrupts (sti)...\n");
-    __asm__ volatile("sti");
+    /* ── Interrupts deferred: sti is below after all tasks are created.
+     *   If interrupts fire before g_current is valid,
+     *   irq_handler → task_yield() would dereference NULL. */
 
     /* ── Phase 8b Step 1: ELF header parse test ── */
     serial_write_string("\n=== Phase 8b Step 1: ELF parse ===\n");
@@ -533,7 +535,31 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
     task_create_user(shell_page, 'S', 0);   /* 'S' = Shell */
 
-    serial_write_string("Shell: entering idle/scheduler loop...\n");
+    /* ── Phase 11: Preemptive scheduling — register-verification tasks ──
+     * Two tasks with distinct 6-register markers.  Each verifies its
+     * own registers across cooperative yields AND timer preemptions.
+     * If preemption corrupts a register, FAIL_A or FAIL_B prints. */
+    serial_write_string("\n=== Phase 11: Regtest tasks ===\n");
+    {
+        uint32_t rta_page = pmm_alloc_page();
+        paging_set_user_accessible(rta_page);
+        copy_code(rta_page, build_regtest_a_bin, build_regtest_a_bin_len);
+        task_t *rta = task_create_user(rta_page, 'a', 0);
+        serial_write_string("Regtest A: task ");
+        serial_write_hex(rta ? rta->id : 0);
+        serial_write_string("\n");
+
+        uint32_t rtb_page = pmm_alloc_page();
+        paging_set_user_accessible(rtb_page);
+        copy_code(rtb_page, build_regtest_b_bin, build_regtest_b_bin_len);
+        task_t *rtb = task_create_user(rtb_page, 'b', 0);
+        serial_write_string("Regtest B: task ");
+        serial_write_hex(rtb ? rtb->id : 0);
+        serial_write_string("\n");
+    }
+
+    serial_write_string("Shell: enabling interrupts (sti) + entering idle/scheduler loop...\n");
+    __asm__ volatile("sti");
     for (;;) {
         task_yield();
     }

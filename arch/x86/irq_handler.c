@@ -3,6 +3,7 @@
 #include "idt.h"
 #include "pic.h"
 #include "../../drivers/serial.h"
+#include "../../sched/task.h"
 
 /* IRQ0 entry point defined in irq.asm */
 extern void irq0_entry(void);
@@ -18,15 +19,27 @@ void irq_handler(registers_t *r)
 {
     if (r->int_no == 32) {
         tick_count++;
-        serial_write_string("tick ");
-        serial_write_hex(tick_count);
-        serial_write_string("\n");
+
+        /* Reduced output: every 50 ticks (~2.75s at 18.2 Hz) */
+        if (tick_count % 50 == 0) {
+            serial_write_string("tick ");
+            serial_write_hex(tick_count);
+            serial_write_string("\n");
+        }
     }
 
-    /* EOI last: the PIC only gets released once we're done.
-       r->int_no - 32 converts vector → IRQ number
-       (32 → 0, 33 → 1, …, 47 → 15). */
+    /* EOI before schedule(): release the PIC so the next timer
+     * IRQ can be latched while we're in a different task.
+     * IF is still 0 (interrupt gate), so it won't actually fire
+     * until the next iret. */
     pic_send_eoi((uint8_t)(r->int_no - 32));
+
+    /* Preemptive scheduling: only on timer IRQ (vector 32).
+     * task_yield() does cli internally — safe even though IF is
+     * already 0 from the interrupt gate. */
+    if (r->int_no == 32) {
+        task_yield();
+    }
 }
 
 void irq_init(void)

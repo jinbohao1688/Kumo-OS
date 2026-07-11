@@ -174,6 +174,12 @@ task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_es
 
 void task_yield(void)
 {
+    /* Disable interrupts during the critical section: g_current
+     * manipulation, TSS.esp0 update, and the switch_to ESP swap.
+     * IF is restored naturally on the next iret (user tasks) or
+     * kept 0 until the next yield (idle loop). */
+    __asm__ volatile("cli");
+
     task_t *old = g_current;
     task_t *new = g_current->next;
 
