@@ -15,7 +15,7 @@ ISO_OUT     := $(BUILD_DIR)/kumo.iso
 
 # Sources
 ASM_SRCS    := boot/multiboot_header.asm arch/x86/boot.asm arch/x86/isr_stub.asm arch/x86/isr.asm arch/x86/irq.asm
-C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c
+C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c
 
 # Objects (under build/)
 ASM_OBJS    := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(notdir $(ASM_SRCS)))
@@ -72,7 +72,7 @@ $(BUILD_DIR)/irq.o: arch/x86/irq.asm | $(BUILD_DIR)
 
 # ── Compile C (each .c → build/<name>.o) ──
 
-$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/serial.o: drivers/serial.c drivers/serial.h | $(BUILD_DIR)
@@ -91,6 +91,12 @@ $(BUILD_DIR)/pic.o: arch/x86/pic.c arch/x86/pic.h drivers/serial.h | $(BUILD_DIR
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/irq_handler.o: arch/x86/irq_handler.c arch/x86/irq.h arch/x86/isr.h arch/x86/idt.h arch/x86/pic.h drivers/serial.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/multiboot.o: mm/multiboot.c mm/multiboot.h drivers/serial.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/pmm.o: mm/pmm.c mm/pmm.h mm/multiboot.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ── Ensure build dir exists ──
