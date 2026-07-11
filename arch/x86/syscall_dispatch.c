@@ -5,8 +5,9 @@
 #include "../../mm/kheap.h"
 #include "paging.h"
 
-/* run_exec — defined in kernel/main.c (run registry) */
+/* run_exec / exec_elf_from_path — defined in kernel/main.c */
 extern int run_exec(const char *name);
+extern int exec_elf_from_path(const char *path);
 
 uint32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
                           uint32_t a3, uint32_t a4, uint32_t a5)
@@ -104,6 +105,13 @@ uint32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
             serial_putchar((char)kbuf[i]);
         kfree(kbuf);
         return len;
+    }
+
+    case SYSCALL_EXEC: {
+        char kpath[256];
+        if (copy_from_user_string(kpath, (const char *)a1, sizeof(kpath)) != 0)
+            return (uint32_t)-1;
+        return (uint32_t)exec_elf_from_path(kpath);
     }
 
     default:

@@ -87,12 +87,13 @@ task_t *task_create(void (*entry)(void))
 /* ── task_create_user ──
  * Create a Ring3 user task.  Allocates:
  *   - 2-page kernel stack (for syscall/interrupt handling)
- *   - 1-page user stack (accessible from Ring3)
+ *   - 1-page user stack (accessible from Ring3), unless user_esp != 0
+ *     (in which case the caller already built the user stack).
  * Builds a combined switch_to + iret frame so that when the scheduler
  * picks this task for the first time, switch_to's `ret` jumps to
  * return_to_ring3, which iret's into user mode. */
 
-task_t *task_create_user(uint32_t entry_addr, uint32_t id_char)
+task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_esp)
 {
     /* ── Kernel stack (2 pages, contiguous) ── */
     uint32_t kstack_base = pmm_alloc_contiguous_pages(2);
@@ -102,16 +103,19 @@ task_t *task_create_user(uint32_t entry_addr, uint32_t id_char)
     }
     uint32_t kstack_top = kstack_base + 2 * PAGE_SIZE;
 
-    /* ── User stack (1 page) ── */
-    uint32_t ustack_base = pmm_alloc_page();
-    if (!ustack_base) {
-        serial_write_string("Task: ERROR — PMM out of memory for user stack\n");
-        return NULL;
+    /* ── User stack (1 page) — only if caller didn't provide one ── */
+    uint32_t ustack_top;
+    if (user_esp == 0) {
+        uint32_t ustack_base = pmm_alloc_page();
+        if (!ustack_base) {
+            serial_write_string("Task: ERROR — PMM out of memory for user stack\n");
+            return NULL;
+        }
+        ustack_top = ustack_base + PAGE_SIZE;
+        paging_set_user_accessible(ustack_base);
+    } else {
+        ustack_top = user_esp;
     }
-    uint32_t ustack_top = ustack_base + PAGE_SIZE;
-
-    /* Mark user stack page as Ring3-accessible */
-    paging_set_user_accessible(ustack_base);
 
     /* ── Build combined stack frame at kstack_top - 40 ──
      *

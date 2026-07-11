@@ -14,6 +14,7 @@
 #define SYSCALL_READDIR     8   /* 0 = readdir(path, index, name_buf) */
 #define SYSCALL_RUN         9   /* task_id = run(name) — launch registered test */
 #define SYSCALL_WRITECONSOLE 10 /* n = writeconsole(buf, len) — raw serial output */
+#define SYSCALL_EXEC        11 /* task_id = exec(path) — load ELF from VFS and execute */
 
 /* C dispatcher — called by syscall_handler (asm stub).
    Returns value to be placed in EAX before returning to user mode. */

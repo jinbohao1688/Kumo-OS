@@ -153,8 +153,17 @@ read_loop:
     lea  edx, [ebp + cmd_run]
     call strcmp_word
     test eax, eax
-    jnz  .unknown
+    jnz  .try_exec
     call cmd_run_handler
+    jmp  main_loop
+
+.try_exec:
+    lea  ebx, [ebp + line_buf + esi]
+    lea  edx, [ebp + cmd_exec]
+    call strcmp_word
+    test eax, eax
+    jnz  .unknown
+    call cmd_exec_handler
     jmp  main_loop
 
 .unknown:
@@ -478,6 +487,101 @@ cmd_run_handler:
     ret
 
 
+
+; ═══════════════════════════════════════════════════════════════
+; ── cmd_exec_handler ──
+; Usage: exec <path>
+; Loads an ELF executable from the filesystem and runs it.
+; This is the first truly dynamic program loader — unlike run
+; (which launches pre-registered embedded binaries), exec reads
+; a file from VFS, parses its ELF headers, maps segments into
+; memory, builds the user stack, and creates a new task.
+; ═══════════════════════════════════════════════════════════════
+cmd_exec_handler:
+    ; esi = offset of "exec" in line_buf
+    mov  edi, esi
+.skip_exec:
+    mov  al, [ebp + line_buf + edi]
+    cmp  al, 0
+    je   .exec_usage
+    cmp  al, ' '
+    je   .exec_found_space
+    inc  edi
+    jmp  .skip_exec
+.exec_found_space:
+    inc  edi                   ; skip space
+    ; Skip more spaces
+.exec_skip_sp:
+    mov  al, [ebp + line_buf + edi]
+    cmp  al, ' '
+    jne  .exec_arg_start
+    inc  edi
+    jmp  .exec_skip_sp
+.exec_arg_start:
+    cmp  al, 0
+    je   .exec_usage
+    ; Build path: "/" + filename (if path does not start with /)
+    cmp  al, '/'
+    je   .exec_absolute
+    ; Relative path — prepend "/"
+    mov  byte [ebp + name_buf], '/'
+    lea  esi, [ebp + line_buf + edi]
+    lea  edi, [ebp + name_buf + 1]
+    xor  ecx, ecx
+.exec_cp_rel:
+    mov  al, [esi + ecx]
+    cmp  al, 0
+    je   .exec_cp_done
+    cmp  al, ' '
+    je   .exec_cp_done
+    mov  [edi + ecx], al
+    inc  ecx
+    cmp  ecx, 62
+    jae  .exec_cp_done
+    jmp  .exec_cp_rel
+.exec_cp_done:
+    mov  byte [edi + ecx], 0
+    lea  ebx, [ebp + name_buf]
+    jmp  .exec_do
+.exec_absolute:
+    ; Absolute path — copy as-is to name_buf
+    lea  esi, [ebp + line_buf + edi]
+    lea  edi, [ebp + name_buf]
+    xor  ecx, ecx
+.exec_cp_abs:
+    mov  al, [esi + ecx]
+    cmp  al, 0
+    je   .exec_cp_abs_done
+    cmp  al, ' '
+    je   .exec_cp_abs_done
+    mov  [edi + ecx], al
+    inc  ecx
+    cmp  ecx, 63
+    jae  .exec_cp_abs_done
+    jmp  .exec_cp_abs
+.exec_cp_abs_done:
+    mov  byte [edi + ecx], 0
+    lea  ebx, [ebp + name_buf]
+.exec_do:
+    ; Call SYSCALL_EXEC
+    mov  eax, 11               ; SYSCALL_EXEC
+    ; ebx already = path
+    int  0x80
+    cmp  eax, 0
+    jl   .exec_fail
+    ; Print "started"
+    lea  esi, [ebp + str_started]
+    call puts
+    ret
+.exec_fail:
+    lea  esi, [ebp + str_not_found]
+    call puts
+    ret
+.exec_usage:
+    lea  esi, [ebp + str_exec_usage]
+    call puts
+    ret
+
 ; ═══════════════════════════════════════════════════════════════
 ; ── Data section ──
 ; ═══════════════════════════════════════════════════════════════
@@ -493,20 +597,23 @@ str_started: db "started", 10, 0
 str_unknown: db "unknown command", 10, 0
 str_cat_usage: db "usage: cat <file>", 10, 0
 str_run_usage:  db "usage: run <name>", 10, 0
+str_exec_usage: db "usage: exec <path>", 10, 0
 
 str_help:
     db "Available commands:", 10
     db "  help  - show this help", 10
     db "  ls    - list files", 10
-    db "  cat   <file>  - print file content", 10
-    db "  echo  <text>   - print text", 10
-    db "  run   <test>   - run embedded test", 10, 0
+    db "  cat   <file>     - print file content", 10
+    db "  echo  <text>     - print text", 10
+    db "  run   <test>     - run embedded test (built-in)", 10
+    db "  exec  <elfpath>  - load & run ELF from VFS", 10, 0
 
 cmd_help:  db "help", 0
 cmd_ls:    db "ls", 0
 cmd_cat:   db "cat", 0
 cmd_echo:  db "echo", 0
 cmd_run:   db "run", 0
+cmd_exec:  db "exec", 0
 
 ; ── Buffers ──
 line_buf:  times 128 db 0

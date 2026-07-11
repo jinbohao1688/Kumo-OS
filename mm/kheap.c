@@ -101,25 +101,31 @@ static int coalesce_backward(block_header_t *b)
     return 1;
 }
 
-/* ── Heap expansion ── */
+/* ── Heap expansion ──
+ * Allocates 4 contiguous pages (16 KB) at a time so the free list
+ * contains blocks large enough for multi-KB allocations. */
+
+#define EXPAND_PAGES 4
 
 static int heap_expand(void)
 {
-    if (heap_page_count >= MAX_HEAP_PAGES) return 0;
+    if (heap_page_count + EXPAND_PAGES > MAX_HEAP_PAGES) return 0;
 
-    uint32_t page = pmm_alloc_page();
-    if (!page) return 0;
+    uint32_t base = pmm_alloc_contiguous_pages(EXPAND_PAGES);
+    if (!base) return 0;
 
-    block_header_t *block = (block_header_t *)page;
-    block->size = PAGE_SIZE;
-    block->free = 1;
-
+    block_header_t *block = (block_header_t *)base;
+    block->size = EXPAND_PAGES * PAGE_SIZE;
     fl_insert(block);
-    heap_pages[heap_page_count++] = page;
 
-    serial_write_string("kheap: expanded, page ");
-    serial_write_hex(page);
-    serial_write_string("\n");
+    for (uint32_t i = 0; i < EXPAND_PAGES; i++)
+        heap_pages[heap_page_count++] = base + i * PAGE_SIZE;
+
+    serial_write_string("kheap: expanded, base ");
+    serial_write_hex(base);
+    serial_write_string(" (");
+    serial_write_hex(EXPAND_PAGES);
+    serial_write_string(" pages)\n");
 
     return 1;
 }
@@ -135,17 +141,21 @@ void kheap_init(void)
     serial_write_hex(HEAP_INIT_PAGES);
     serial_write_string(" initial pages...\n");
 
-    for (uint32_t i = 0; i < HEAP_INIT_PAGES; i++) {
-        uint32_t page = pmm_alloc_page();
-        if (!page) {
-            serial_write_string("KHeap: ERROR — PMM out of memory\n");
-            return;
-        }
-        block_header_t *block = (block_header_t *)page;
-        block->size = PAGE_SIZE;
-        fl_insert(block);
-        heap_pages[heap_page_count++] = page;
+    /* Allocate all initial pages contiguously → one large block.
+     * Per-page allocation + per-page free list entries can't serve
+     * kmalloc requests larger than PAGE_SIZE because coalescing
+     * doesn't cross page boundaries. */
+    uint32_t base = pmm_alloc_contiguous_pages(HEAP_INIT_PAGES);
+    if (!base) {
+        serial_write_string("KHeap: ERROR — PMM out of memory\n");
+        return;
     }
+    block_header_t *block = (block_header_t *)base;
+    block->size = HEAP_INIT_PAGES * PAGE_SIZE;
+    fl_insert(block);
+
+    for (uint32_t i = 0; i < HEAP_INIT_PAGES; i++)
+        heap_pages[heap_page_count++] = base + i * PAGE_SIZE;
 
     uint32_t total = HEAP_INIT_PAGES * PAGE_SIZE;
     serial_write_string("KHeap: init done, ");

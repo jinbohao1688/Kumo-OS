@@ -29,7 +29,7 @@ typedef struct task {
 
 void    task_init(void);
 task_t *task_create(void (*entry)(void));
-task_t *task_create_user(uint32_t entry_addr, uint32_t id_char);
+task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_esp);
 void    task_yield(void);
 task_t *task_current(void);
 

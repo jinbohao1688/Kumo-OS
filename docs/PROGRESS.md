@@ -282,3 +282,101 @@ docs/
   decisions.md       — ADR-003/ADR-004 标记已实现
   phase-notes.md     — +Phase 8a 踩坑记录（strcmp_word 比较顺序）
 
+## 阶段 8b：ELF32 加载器 ✓ (2026-07-11)
+
+### 架构决策
+
+- **PIE-only 方案**（非简化选择，而是共享页目录架构下的必然）：
+  - 所有任务共享同一 Page Directory（TCB 无 CR3 字段）
+  - 两个非 PIE 程序若 vaddr 重叠，内存映射必然冲突
+  - 因此程序必须用 position-independent 方式加载
+- **选项 2：手工 NASM PIC，零重定位**：
+  - 不使用 .rela.dyn 重定位表（省略 ELF 中最复杂的部分）
+  - 用户程序通过 `call/pop ebp; sub ebp, get_eip` 做 EIP discovery
+  - 一切数据寻址通过 `[ebp + offset]` PC-relative
+  - ELF 格式仅作为容器（封装代码段），不依赖重定位机制
+
+### Step 1: ELF header 解析
+
+- [x] `elf_parse_and_print()` — 解析 ELF header + program headers
+  - 验证 ELF magic (0x7F E L F)、32-bit、LE
+  - 打印全部 19 个 ELF header 字段 + 每个 program header 的 8 个字段
+  - 与 `i686-elf-readelf -h -l` 输出逐字段比对，100% 一致
+
+### Step 2: ELF 内存映射
+
+- [x] `elf_load()` — 将 ELF 加载到内存
+  - Pass 1: 扫描 PT_LOAD segments，找到最小 vaddr 和最大 end
+  - `pmm_alloc_contiguous_pages()` 分配连续物理页
+  - `load_base = base_phys - min_vaddr`（恒等映射下的加载基址）
+  - `paging_set_user_accessible()` 标记所有页为 Ring3 可访问
+  - Pass 2: 从文件拷贝 segment 数据，zero BSS（memsz > filesz）
+  - 返回 `load_base + e_entry`（通用公式，不特殊处理 e_entry=0）
+  - 验证：hexdump 与 `xxd` 输出逐字节比对，0x37 字节全部一致
+
+### Step 3: 用户栈构造（System V ABI argc/argv）
+
+- [x] `elf_setup_user_stack(prog_name)` — 构造符合 System V ABI 的用户栈
+  - 分配用户栈页面 → `paging_set_user_accessible()`
+  - 自顶向下构造：字符串数据 → 对齐 → 指针数组 → argc
+  - 布局：`[argc=1][argv[0]=ptr_to_name][argv NULL][envp NULL]...[name_string]`
+  - 验证：GDB dump 6 dwords，确认所有 5 个字段正确
+
+### Step 4: task_create_user 集成 + Ring3 执行
+
+- [x] `task_create_user()` 增加 `user_esp` 参数
+  - `user_esp == 0`：内部分配新用户栈（兼容 shell/test 程序）
+  - `user_esp != 0`：使用预构造的 ELF 栈（Step 3 返回值）
+- [x] 内核入口串口 dump 组合栈帧 10 dwords，确认 EIP/CS/EFLAGS/ESP/SS 全部正确
+- [x] 验证：`Hello from ELF!` 出现在串口输出（argv[0]="hello_elf"）
+
+### Step 5: Shell exec 命令接入
+
+- [x] `exec_elf_from_path(path)` — 从 VFS 加载 ELF 的完整流程
+  - vfs_open → vfs_read 到 PMM 缓冲区 → elf_load → elf_setup_user_stack → task_create_user
+- [x] `/hello.elf` 预加载到 ramfs（vfs_open + vfs_write，在 task_init 之后以使用 fd 表）
+- [x] SYSCALL_EXEC(11) — 用户态 exec 调用入口
+- [x] exec 参数解析支持绝对路径和相对路径（自动补齐 "/"）
+- [x] 验证：shell 敲入 `exec /hello.elf` → `started` → `Hello from ELF!`
+  - argv[0]="/hello.elf"（exec 路径）vs argv[0]="hello_elf"（Step 4 硬编码）— 区分两条执行路径
+  - tick 时序：Step 4 输出在 tick 1 之前，exec 输出在 tick 0x2D 之后
+
+### kheap 修复
+
+- [x] **kheap_init 改用 `pmm_alloc_contiguous_pages`**：初始 16 页作为一个 64KB 大块
+  - 旧方案：每页单独插入 free list（单页最大 4KB block）
+  - 新方案：连续页作为单个大块（可服务 >4KB 的分配）
+- [x] **heap_expand 改为 4 页一扩**：每次扩展 16KB 连续页
+  - 旧方案：每次扩 1 页 = 4KB（对大块分配无用）
+  - 新方案：每次扩 4 页 = 16KB（可服务中等大小的分配）
+- [x] **exec 路径 ELF 缓冲区改用 PMM**：`pmm_alloc_contiguous_pages(4)` 代替 `kmalloc(16KB)`
+  - 原因：heap 的 coalesce_forward/backward 限在单页边界内，跨页碎片化后大块分配可能不可达
+  - 这是临时方案，长期应修复 heap 跨页 coalescing 或切换到 buddy allocator
+
+### 阶段 8b 文件清单
+
+```
+fs/
+  elf.h             — ELF32 结构体定义 + 3 个函数声明（386 行）
+  elf.c             — ELF 解析器 + 加载器 + 用户栈构造器
+user/
+  hello_elf.asm     — 最小 ELF 测试程序（位置无关，"Hello from ELF!"）
+  elf_i386.ld       — ELF32 链接脚本（vaddr 从 0x0 开始，作为 PIE 的相对基址）
+arch/x86/
+  syscall.h         — +SYSCALL_EXEC(11)
+  syscall_dispatch.c — +SYSCALL_EXEC case
+sched/
+  task.h            — task_create_user 增加 user_esp 参数
+  task.c            — task_create_user 支持预构造用户栈
+kernel/
+  main.c            — +exec_elf_from_path(), +pre-load /hello.elf, +ELF task create
+mm/
+  kheap.c           — kheap_init 连续页分配 + heap_expand 4 页/次
+user/
+  shell.asm         — +exec 命令（参数解析 + SYSCALL_EXEC）+ 更新 help 文本
+```
+
+**阶段 8a+8b 全部完成** 🎉
+
+**阶段 0-8 完整功能链**：引导 → 中断/异常 → 内存管理(PMM+分页+堆) → 多任务调度 → Ring3 用户态 → syscall → VFS+RamFS → Shell → ELF 加载器执行外部程序
+

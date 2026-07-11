@@ -15,7 +15,7 @@ ISO_OUT     := $(BUILD_DIR)/kumo.iso
 
 # Sources
 ASM_SRCS    := boot/multiboot_header.asm arch/x86/boot.asm arch/x86/isr_stub.asm arch/x86/isr.asm arch/x86/irq.asm sched/switch.asm arch/x86/syscall.asm arch/x86/ring3.asm
-C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c mm/kheap.c sched/task.c arch/x86/tss.c arch/x86/syscall_dispatch.c fs/vfs.c fs/ramfs.c
+C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c mm/kheap.c sched/task.c arch/x86/tss.c arch/x86/syscall_dispatch.c fs/vfs.c fs/ramfs.c fs/elf.c
 
 # Objects (under build/)
 ASM_OBJS    := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(notdir $(ASM_SRCS)))
@@ -50,7 +50,7 @@ $(ISO_OUT): $(KERNEL_ELF)
 
 # ── Link ──
 
-$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h
+$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # ── Assemble (each .asm → build/<name>.o) ──
@@ -72,7 +72,7 @@ $(BUILD_DIR)/irq.o: arch/x86/irq.asm | $(BUILD_DIR)
 
 # ── Compile C (each .c → build/<name>.o) ──
 
-$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h fs/elf.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/serial.o: drivers/serial.c drivers/serial.h | $(BUILD_DIR)
@@ -129,6 +129,9 @@ $(BUILD_DIR)/ramfs.o: fs/ramfs.c fs/ramfs.h fs/vfs.h mm/kheap.h drivers/serial.h
 $(BUILD_DIR)/task.o: sched/task.c sched/task.h mm/kheap.h mm/pmm.h arch/x86/paging.h arch/x86/tss.h fs/vfs.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/elf.o: fs/elf.c fs/elf.h mm/pmm.h arch/x86/paging.h drivers/serial.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # ── Ensure build dir exists ──
 
 $(BUILD_DIR):
@@ -155,3 +158,14 @@ $(BUILD_DIR)/test_boundary.h: user/test_boundary.asm | $(BUILD_DIR)
 $(BUILD_DIR)/test_null.h: user/test_null.asm | $(BUILD_DIR)
 	nasm -f bin $< -o $(BUILD_DIR)/test_null.bin
 	xxd -i $(BUILD_DIR)/test_null.bin > $@
+
+# ── ELF test program: assemble + link → ELF32 → C header ──
+
+$(BUILD_DIR)/hello_elf.o: user/hello_elf.asm | $(BUILD_DIR)
+	$(NASM) -f elf32 $< -o $@
+
+$(BUILD_DIR)/hello_elf.elf: $(BUILD_DIR)/hello_elf.o user/elf_i386.ld
+	$(LD) -m elf_i386 -T user/elf_i386.ld $< -o $@
+
+$(BUILD_DIR)/hello_elf.h: $(BUILD_DIR)/hello_elf.elf | $(BUILD_DIR)
+	xxd -i $< > $@

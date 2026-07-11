@@ -17,6 +17,8 @@
 #include "../build/test_bad_ptr.h"
 #include "../build/test_boundary.h"
 #include "../build/test_null.h"
+#include "../build/hello_elf.h"
+#include "../fs/elf.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -235,7 +237,7 @@ int run_exec(const char *name)
             if (name[j] == 0) break;
         }
         if (match) {
-            task_t *t = task_create_user(g_run_registry[i].code_page, name[0]);
+            task_t *t = task_create_user(g_run_registry[i].code_page, name[0], 0);
             if (t) {
                 serial_write_string("Run: launched '");
                 serial_write_string((char *)name);
@@ -248,6 +250,76 @@ int run_exec(const char *name)
         }
     }
     return -1;
+}
+
+/* ── Phase 8b: ELF exec from VFS ── */
+
+#define ELF_LOAD_MAX  (16 * 1024)    /* max ELF file size; heap blocks are 16 KB */
+
+int exec_elf_from_path(const char *path)
+{
+    serial_write_string("exec: opening '");
+    serial_write_string((char *)path);
+    serial_write_string("'\n");
+
+    int fd = vfs_open(path, O_RDONLY);
+    if (fd < 0) {
+        serial_write_string("exec: open failed\n");
+        return -1;
+    }
+
+    /* Use PMM directly for the ELF buffer — kheap can't serve multi-page
+     * allocations because coalescing stops at page boundaries. */
+    #define ELF_BUF_PAGES  ((ELF_LOAD_MAX + PAGE_SIZE - 1) / PAGE_SIZE)
+    uint8_t *buf = (uint8_t *)pmm_alloc_contiguous_pages(ELF_BUF_PAGES);
+    if (!buf) {
+        serial_write_string("exec: no memory for ELF buffer\n");
+        vfs_close(fd);
+        return -1;
+    }
+
+    uint32_t total = 0;
+    int n;
+    while (total < ELF_LOAD_MAX) {
+        n = vfs_read(fd, buf + total, ELF_LOAD_MAX - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    vfs_close(fd);
+
+    serial_write_string("exec: read ");
+    serial_write_hex(total);
+    serial_write_string(" bytes\n");
+
+    if (total == 0) {
+        serial_write_string("exec: empty file\n");
+        return -1;
+    }
+
+    uint32_t entry = elf_load(buf, total);
+    if (entry == 0) {
+        serial_write_string("exec: ELF load failed\n");
+        return -1;
+    }
+
+    uint32_t user_esp = elf_setup_user_stack(path);
+    if (user_esp == 0) {
+        serial_write_string("exec: stack setup failed\n");
+        return -1;
+    }
+
+    task_t *t = task_create_user(entry, 'X', user_esp);
+
+    if (!t) {
+        serial_write_string("exec: task creation failed\n");
+        return -1;
+    }
+
+    serial_write_string("exec: launched task ");
+    serial_write_hex(t->id);
+    serial_write_string("\n");
+
+    return (int)t->id;
 }
 
 /* ── Phase 7: Shell + embedded tests ── */
@@ -305,6 +377,26 @@ void kmain(unsigned int magic, void *multiboot_info) {
     serial_write_string("Enabling interrupts (sti)...\n");
     __asm__ volatile("sti");
 
+    /* ── Phase 8b Step 1: ELF header parse test ── */
+    serial_write_string("\n=== Phase 8b Step 1: ELF parse ===\n");
+    elf_parse_and_print(build_hello_elf_elf, build_hello_elf_elf_len);
+
+    /* ── Phase 8b Step 2: ELF memory mapping ── */
+    serial_write_string("\n=== Phase 8b Step 2: ELF load ===\n");
+    uint32_t elf_entry = elf_load(build_hello_elf_elf, build_hello_elf_elf_len);
+    if (elf_entry == 0) {
+        serial_write_string("ERROR: ELF load failed!\n");
+    }
+    (void)elf_entry;   /* used in Step 4 for task_create_user */
+
+    /* ── Phase 8b Step 3: user stack setup (argc/argv) ── */
+    serial_write_string("\n=== Phase 8b Step 3: Stack setup ===\n");
+    uint32_t user_esp = elf_setup_user_stack("hello_elf");
+    if (user_esp == 0) {
+        serial_write_string("ERROR: stack setup failed!\n");
+    }
+    (void)user_esp;
+
     /* ── Phase 7: Shell + test program registry ── */
     serial_write_string("\n=== Phase 7: Shell ===\n");
 
@@ -344,7 +436,57 @@ void kmain(unsigned int magic, void *multiboot_info) {
     serial_write_string(" bytes)\n");
 
     task_init();
-    task_create_user(shell_page, 'S');   /* 'S' = Shell */
+
+    /* ── Pre-load ELF test program into ramfs (must be after task_init:
+     *     vfs_open/vfs_write need task_current() for the fd table) ── */
+    serial_write_string("\n=== Pre-load /hello.elf into ramfs ===\n");
+    {
+        int elffd = vfs_open("/hello.elf", O_WRONLY);
+        if (elffd >= 0) {
+            int written = vfs_write(elffd, build_hello_elf_elf, build_hello_elf_elf_len);
+            serial_write_string("Wrote ");
+            serial_write_hex((uint32_t)written);
+            serial_write_string(" bytes to /hello.elf\n");
+            vfs_close(elffd);
+        } else {
+            serial_write_string("ERROR: could not create /hello.elf\n");
+        }
+    }
+
+    /* ── Phase 8b Step 4: create ELF task with pre-built user stack ── */
+    serial_write_string("\n=== Phase 8b Step 4: ELF task create ===\n");
+    serial_write_string("ELF: entry=");
+    serial_write_hex(elf_entry);
+    serial_write_string(" user_esp=");
+    serial_write_hex(user_esp);
+    serial_write_string("\n");
+
+    /* Verify combined stack frame via serial before execution */
+    task_t *elf_task = task_create_user(elf_entry, 'E', user_esp);
+    if (elf_task) {
+        uint32_t *kst = (uint32_t *)(elf_task->esp);
+        serial_write_string("ELF task kstack frame (10 dwords):\n");
+        for (int i = 0; i < 10; i++) {
+            serial_write_string("  sp[");
+            serial_write_hex(i);
+            serial_write_string("] = ");
+            serial_write_hex(kst[i]);
+            serial_write_string("\n");
+        }
+        serial_write_string("  -> iret will pop: EIP=");
+        serial_write_hex(kst[5]);
+        serial_write_string(" CS=");
+        serial_write_hex(kst[6]);
+        serial_write_string(" EFLAGS=");
+        serial_write_hex(kst[7]);
+        serial_write_string(" ESP=");
+        serial_write_hex(kst[8]);
+        serial_write_string(" SS=");
+        serial_write_hex(kst[9]);
+        serial_write_string("\n");
+    }
+
+    task_create_user(shell_page, 'S', 0);   /* 'S' = Shell */
 
     serial_write_string("Shell: entering idle/scheduler loop...\n");
     for (;;) {
