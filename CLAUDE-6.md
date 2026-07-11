@@ -45,7 +45,9 @@ Kumo OS 是一个从零开发的独立操作系统，用 C 语言编写，目标
 boot/       引导相关：Multiboot2头、grub.cfg
 arch/x86/   架构相关：GDT/IDT/分页/上下文切换/usermode切换（汇编+C）
 kernel/     内核核心：main.c、syscall分发、内核初始化流程
-mm/         内存管理：物理页帧分配器、分页、内核堆
+mm/         内存管理：物理页帧分配器（位图）、内核堆（kmalloc/kfree）
+            （分页实现放在 arch/x86/，因其直接操作CR0/CR3/PDE位布局等x86特定硬件；
+            mm/ 仅保留跨架构可复用的分配逻辑）
 sched/      调度：TCB、调度算法、上下文切换胶水代码
 fs/         文件系统：VFS抽象层 + 具体实现(ramfs/fat32等)
 drivers/    设备驱动：vga、serial、keyboard、disk，每设备一子目录
