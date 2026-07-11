@@ -331,6 +331,33 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
         d[i] = src[i];
 }
 
+/* ── Phase 9: Framebuffer fill (32 bpp, row-by-row to respect pitch) ── */
+
+static void framebuffer_fill_solid(uint32_t color)
+{
+    if (g_framebuffer.addr == 0 || g_framebuffer.bpp != 32) {
+        serial_write_string("FB: skip fill (addr=0 or bpp!=32)\n");
+        return;
+    }
+
+    uint32_t *fb = (uint32_t *)g_framebuffer.addr;
+    uint32_t pitch_dw = g_framebuffer.pitch / 4;
+
+    for (uint32_t y = 0; y < g_framebuffer.height; y++) {
+        for (uint32_t x = 0; x < g_framebuffer.width; x++) {
+            fb[y * pitch_dw + x] = color;
+        }
+    }
+
+    serial_write_string("FB: filled ");
+    serial_write_hex(g_framebuffer.width);
+    serial_write_string("x");
+    serial_write_hex(g_framebuffer.height);
+    serial_write_string(" with color 0x");
+    serial_write_hex(color);
+    serial_write_string("\n");
+}
+
 void kmain(unsigned int magic, void *multiboot_info) {
     serial_init();
     serial_write_string("Kumo OS booted.\n");
@@ -357,6 +384,16 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
     kheap_init();
     heap_tests();
+
+    /* ── Phase 9: Map framebuffer + fill test pattern ── */
+    if (g_framebuffer.addr != 0) {
+        uint32_t fb_bytes = g_framebuffer.height * g_framebuffer.pitch;
+        serial_write_string("\n=== Phase 9: Framebuffer ===\n");
+        paging_map_phys_range(g_framebuffer.addr, fb_bytes);
+        framebuffer_fill_solid(0x00335588);
+    } else {
+        serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
+    }
 
     /* ── Phase 5: TSS + syscall gate ── */
     tss_init();

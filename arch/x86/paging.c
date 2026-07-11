@@ -97,6 +97,50 @@ void paging_init(void)
     serial_write_string("Paging: enabled.\n");
 }
 
+/* ── Extend identity mapping to cover a physical range outside the initial
+ *     [0, top_of_memory) window.  Used for MMIO regions like the framebuffer
+ *     that live far above usable RAM.  Allocates page tables on demand. ── */
+
+void paging_map_phys_range(uint32_t phys_addr, uint32_t size)
+{
+    uint32_t start = phys_addr & ~0xFFF;                        /* page-align down */
+    uint32_t end   = (phys_addr + size + PAGE_SIZE - 1) & ~0xFFF; /* align up  */
+
+    pt_entry_t *pd = (pt_entry_t *)pd_phys;
+
+    for (uint32_t addr = start; addr < end; addr += PAGE_SIZE) {
+        uint32_t pd_idx = addr >> 22;
+        uint32_t pt_idx = (addr >> 12) & 0x3FF;
+
+        /* Allocate a new page table if this PDE doesn't exist yet */
+        if (!(pd[pd_idx] & PAGE_P)) {
+            uint32_t pt_phys = pmm_alloc_page();
+            pt_entry_t *pt   = (pt_entry_t *)pt_phys;
+            for (int i = 0; i < PTE_COUNT; i++)
+                pt[i] = 0;
+            pd[pd_idx] = pt_phys | PAGE_DEFAULT;
+
+            serial_write_string("Paging: new PT for PDE[");
+            serial_write_hex(pd_idx);
+            serial_write_string("] phys=");
+            serial_write_hex(pt_phys);
+            serial_write_string("\n");
+        }
+
+        uint32_t pt_phys = pd[pd_idx] & ~0xFFF;
+        pt_entry_t *pt   = (pt_entry_t *)pt_phys;
+        pt[pt_idx] = addr | PAGE_DEFAULT;
+    }
+
+    serial_write_string("Paging: mapped [0x");
+    serial_write_hex(start);
+    serial_write_string(", 0x");
+    serial_write_hex(end);
+    serial_write_string(") — ");
+    serial_write_hex((end - start) / PAGE_SIZE);
+    serial_write_string(" pages\n");
+}
+
 /* ── ADR-004 internal: check a single page's user accessibility ── */
 static int page_is_user_accessible(uint32_t vaddr)
 {

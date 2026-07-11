@@ -2,6 +2,7 @@
 #include "../drivers/serial.h"
 
 memory_map_t g_memory_map;
+framebuffer_t g_framebuffer;
 
 void multiboot_parse(unsigned int magic, void *info)
 {
@@ -24,6 +25,56 @@ void multiboot_parse(unsigned int magic, void *info)
 
         if (tag->type == MULTIBOOT_TAG_END)
             break;
+
+        if (tag->type == MULTIBOOT_TAG_FRAMEBUFFER) {
+            multiboot_tag_framebuffer_t *fb = (multiboot_tag_framebuffer_t *)ptr;
+            g_framebuffer.addr   = (uint32_t)fb->framebuffer_addr;
+            g_framebuffer.pitch  = fb->framebuffer_pitch;
+            g_framebuffer.width  = fb->framebuffer_width;
+            g_framebuffer.height = fb->framebuffer_height;
+            g_framebuffer.bpp    = fb->framebuffer_bpp;
+            g_framebuffer.type   = fb->framebuffer_type;
+
+            serial_write_string("Framebuffer: ");
+            serial_write_hex(g_framebuffer.width);
+            serial_write_string("x");
+            serial_write_hex(g_framebuffer.height);
+            serial_write_string(" bpp=");
+            serial_write_hex(g_framebuffer.bpp);
+            serial_write_string(" addr=0x");
+            serial_write_hex(g_framebuffer.addr);
+            serial_write_string(" type=");
+            serial_write_hex(g_framebuffer.type);
+            serial_write_string("\n");
+
+            if (fb->framebuffer_type == 1) {
+                g_framebuffer.red_pos   = fb->red_field_position;
+                g_framebuffer.red_mask  = fb->red_mask_size;
+                g_framebuffer.green_pos = fb->green_field_position;
+                g_framebuffer.green_mask = fb->green_mask_size;
+                g_framebuffer.blue_pos  = fb->blue_field_position;
+                g_framebuffer.blue_mask = fb->blue_mask_size;
+
+                serial_write_string("  red:   pos=");
+                serial_write_hex(g_framebuffer.red_pos);
+                serial_write_string(" mask=");
+                serial_write_hex(g_framebuffer.red_mask);
+                serial_write_string("\n  green: pos=");
+                serial_write_hex(g_framebuffer.green_pos);
+                serial_write_string(" mask=");
+                serial_write_hex(g_framebuffer.green_mask);
+                serial_write_string("\n  blue:  pos=");
+                serial_write_hex(g_framebuffer.blue_pos);
+                serial_write_string(" mask=");
+                serial_write_hex(g_framebuffer.blue_mask);
+                serial_write_string("\n");
+            } else {
+                g_framebuffer.red_pos = g_framebuffer.red_mask = 0;
+                g_framebuffer.green_pos = g_framebuffer.green_mask = 0;
+                g_framebuffer.blue_pos = g_framebuffer.blue_mask = 0;
+                serial_write_string("  (indexed/text mode — no RGB color info)\n");
+            }
+        }
 
         if (tag->type == MULTIBOOT_TAG_MMAP) {
             multiboot_tag_mmap_t *mmap_tag = (multiboot_tag_mmap_t *)ptr;

@@ -16,6 +16,11 @@ void paging_init(void);
  * (which equals its virtual address under identity mapping). */
 void paging_set_user_accessible(uint32_t phys_addr);
 
+/* Map a physical address range [phys_addr, phys_addr+size) into the identity-mapped
+ * kernel address space. Creates page tables on demand if the range falls outside
+ * the initial paging_init coverage. Kernel-only mapping (supervisor, r/w). */
+void paging_map_phys_range(uint32_t phys_addr, uint32_t size);
+
 /* ADR-003: Unmap virtual address 0 (NULL page) — clear PTE[0].P + invlpg. */
 void paging_unmap_null_page(void);
 
