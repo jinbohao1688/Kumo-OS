@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+*.o
+*.bin
+*.iso
+*.elf
+
+# Cross-compiler (if built locally)
+/opt/cross/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
