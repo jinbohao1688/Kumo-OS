@@ -61,4 +61,10 @@
   - ADR-003：暂不做 NULL 页 guard（物理页 0 可访问），后续可单独 unmap
   - GDB 单步验证：CR3=0x10C000, CR0.PG 位从 0→1, 取指无异常, PDE[0] Accessed 位被硬件置位
   - 全链路验证：booted→GDT→IDT→PIC→Memory map→PMM→Paging enabled→sti→tick 连续
-- [ ] 物理页帧分配器后续优化 / 内核堆（下一步）
+- [x] 内核堆 kmalloc/kfree（`mm/kheap.c`，2026-07-11）
+  - 显式自由链表 + first-fit，block 不跨页（单页内最多 4096 字节）
+  - 页首=header 的不变量，backward coalescing 从页首 walk 合法 header 链
+  - forward coalescing 通过地址算术 (header+size) 判断，仅页内
+  - 初始 16 页（~64KB），按需扩展（通过 pmm_alloc_page()）
+  - 6 项测试全覆盖：basic/kfree/write/forward/backward/heap expansion (200×500B, 触发 10 次扩展)
+- [x] **阶段 3 完成**：内存管理子系统（Multiboot 解析 → PMM 位图 → 恒等分页 → 内核堆）

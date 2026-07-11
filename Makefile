@@ -15,7 +15,7 @@ ISO_OUT     := $(BUILD_DIR)/kumo.iso
 
 # Sources
 ASM_SRCS    := boot/multiboot_header.asm arch/x86/boot.asm arch/x86/isr_stub.asm arch/x86/isr.asm arch/x86/irq.asm
-C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c
+C_SRCS      := kernel/main.c drivers/serial.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c mm/kheap.c
 
 # Objects (under build/)
 ASM_OBJS    := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(notdir $(ASM_SRCS)))
@@ -100,6 +100,9 @@ $(BUILD_DIR)/pmm.o: mm/pmm.c mm/pmm.h mm/multiboot.h drivers/serial.h | $(BUILD_
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/paging.o: arch/x86/paging.c arch/x86/paging.h mm/pmm.h mm/multiboot.h drivers/serial.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/kheap.o: mm/kheap.c mm/kheap.h mm/pmm.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ── Ensure build dir exists ──
