@@ -44,7 +44,26 @@
 
 - 2026-07-10：QEMU `-nographic` 模式下，GRUB/SeaBIOS 的引导信息走 VGA 不显示在终端。在串口驱动就绪前，只能靠 `-d int,cpu_reset -no-reboot` 间接确认"没有 triple fault"来推断内核在运行。详见 `docs/phase-notes.md`。
 
-## 阶段 3：内存管理（进行中）
+## 阶段 3：内存管理 ✓ (2026-07-11)
+
+### 物理地址内存布局（128MB QEMU VM，当前实测值）
+
+```
+0x00000000 ─────────────────────── 低 1MB（PMM 不管，恒等映射了）
+0x00100000 ┌────────────────────── managed_base（内核加载点）
+           │ 内核 ELF ~50KB
+           │   .multiboot / .text / .rodata / .data / .bss (含 16KB 启动栈)
+0x00109000 ├── _kernel_end
+           │  [padding < 4KB]
+0x0010A000 ├── PMM bitmap  1 page  ~4KB   (管理 32,480 页)
+0x0010B000 ├── first_free  (PMM sanity alloc → 从此开始)
+0x0010C000 ├── Page Directory  1 page
+0x0010D000 ├── Page Table [0..31]  32 pages  覆盖 [0, 0x08000000)
+0x0012D000 ├── KHeap 初始 16 pages  ~64KB...
+           │   (按需扩展，实测 200×500B 触发 10 次扩展至 0x147000)
+           │  ... 大量自由物理页 (~126MB) ...
+0x07FE0000 └────────────────────── top_of_memory (0x07FE0000)
+```
 
 - [x] Multiboot2 内存 map 解析（`mm/multiboot.c`，2026-07-11）
   - 提取 AVAILABLE 区域到内核所属 `g_memory_map` 数组，解析后不依赖原始 mb_info 指针
