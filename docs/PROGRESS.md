@@ -43,3 +43,22 @@
 ## 踩坑记录
 
 - 2026-07-10：QEMU `-nographic` 模式下，GRUB/SeaBIOS 的引导信息走 VGA 不显示在终端。在串口驱动就绪前，只能靠 `-d int,cpu_reset -no-reboot` 间接确认"没有 triple fault"来推断内核在运行。详见 `docs/phase-notes.md`。
+
+## 阶段 3：内存管理（进行中）
+
+- [x] Multiboot2 内存 map 解析（`mm/multiboot.c`，2026-07-11）
+  - 提取 AVAILABLE 区域到内核所属 `g_memory_map` 数组，解析后不依赖原始 mb_info 指针
+  - 验证方式：输出 2 个可用区域：[0x0, 0x9FC00) 639KB 低端 + [0x100000, 0x7FE0000) ~127MB 高端
+- [x] 物理页帧分配器 位图法（`mm/pmm.c`，2026-07-11）
+  - managed_base=0x100000(1MB)，位图覆盖 [1MB, 0x7FE0000)，全1初始化→释放 first_free 以上
+  - 关键数字：total_pages=0x7EE0(32480), bitmap_bytes=0xFDC(4060≈4KB), bitmap_pages=1
+  - _kernel_end=0x1088dc, bitmap at 0x109000, first_free=0x10A000, free_pages=0x7ED6(32470)
+  - 健全性测试：pmm_alloc_page() 返回 0x10A000 ≡ first_free，内核+位图未被分配
+- [x] 分页（`arch/x86/paging.c`，2026-07-11）
+  - 全物理内存恒等映射（virtual == physical），覆盖 [0, 0x07FE0000) ~128MB
+  - 两级 4KB 页表（10-10-12），32 个 PT + 1 个 PD = 33 页（~132KB 开销）
+  - 页表页面从 PMM 分配，开启前 IF=0（中断关闭），开启后验证成功再 sti
+  - ADR-003：暂不做 NULL 页 guard（物理页 0 可访问），后续可单独 unmap
+  - GDB 单步验证：CR3=0x10C000, CR0.PG 位从 0→1, 取指无异常, PDE[0] Accessed 位被硬件置位
+  - 全链路验证：booted→GDT→IDT→PIC→Memory map→PMM→Paging enabled→sti→tick 连续
+- [ ] 物理页帧分配器后续优化 / 内核堆（下一步）
