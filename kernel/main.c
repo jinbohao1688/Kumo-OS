@@ -28,7 +28,7 @@
 #include "../gfx/font.h"
 #include "../wm/window.h"
 #include "../wm/wm.h"
-#include "../wm/button.h"
+#include "../app/calc.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -357,33 +357,13 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
 /* ── Phase 13c: 3 demo windows (global, referenced by wm) ── */
 static window_t g_win_a, g_win_b, g_win_c;
 
-/* ── Phase 14: Demo button (on window A) ── */
-static button_t  g_demo_btn;
-static window_t *g_btn_parent;  /* set after windows are created */
-
-static void on_button_click(void)
-{
-    serial_write_string("  [callback] on_click fired!\n");
-}
-
-/* ── Phase 14: Two-phase click routing ──
- * Phase 1: Button handling (down/up state machine).
- * Phase 2: Window manager (Z-order, only if button didn't consume event). */
+/* ── Phase 15: Two-phase click routing ──
+ * Phase 1: Calculator app (button state machine).
+ * Phase 2: Window manager (Z-order, only if calc didn't consume event). */
 static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
 {
-    if (buttons & 1) {
-        /* Mouse-down: check buttons first */
-        if (button_hit_test(&g_demo_btn, g_btn_parent, x, y)) {
-            button_handle_down(&g_demo_btn, g_btn_parent, x, y);
-            return;
-        }
-    } else {
-        /* Mouse-up: if a button was pressed, let it handle release */
-        if (button_handle_up(x, y))
-            return;
-    }
-
-    /* Phase 2: Window Z-order (event not consumed by any button) */
+    if (calc_handle_click(x, y, buttons))
+        return;
     wm_handle_click(x, y, buttons);
 }
 
@@ -478,68 +458,51 @@ void kmain(unsigned int magic, void *multiboot_info) {
         wm_draw_all();
         serial_write_string("WM: 3 windows drawn (A bottom, C top).\n");
 
-        /* ── Phase 14: Demo button on window A ── */
-        g_btn_parent = &g_win_a;
-        g_demo_btn.x = 15; g_demo_btn.y = 30; g_demo_btn.w = 120; g_demo_btn.h = 28;
-        g_demo_btn.label = "Click Me";
-        g_demo_btn.color_idle    = make_color(0x60, 0x90, 0x60);
-        g_demo_btn.color_pressed = make_color(0x30, 0xC0, 0x30);
-        g_demo_btn.on_click = on_button_click;
-        button_draw(&g_demo_btn, g_btn_parent, 0);
-        serial_write_string("WM: button 'Click Me' on Demo A\n");
+        /* ── Phase 15: Calculator app ── */
+        serial_write_string("\n=== Phase 15: Calculator ===\n");
+        calc_init();
 
         /* ── Phase 11b: Mouse driver — init after FB is ready ── */
         serial_write_string("\n=== Phase 11b: Mouse ===\n");
         mouse_init();
 
-        /* Phase 13c: register click callback → wm */
+        /* Phase 15: register click callback → calc + wm */
         g_mouse_click_callback = on_mouse_click;
 
-        /* Self-check: 5 click points verifying Z-ordering + hit test */
-        serial_write_string("\nPhase 13c: Z-order self-check...\n");
-        serial_write_string("Initial Z: A, B, C\n");
+        /* ── Phase 15: Calculator self-check — 5 + 3 = 8 ──
+         * Calculator window at (500,40), 240×280.
+         * Button absolute centers:
+         *   "5": rel(66,108) + 26,17 → abs(592, 165)
+         *   "+": rel(178,186) + 26,17 → abs(704, 243)
+         *   "3": rel(122,108) + 26,17 → abs(648, 165)
+         *   "=": rel(122,186) + 26,17 → abs(648, 243) */
+        serial_write_string("\nPhase 15: Calculator self-check (5+3=8)...\n");
 
-        serial_write_string("  [1] click(400,100) empty area: ");
-        on_mouse_click(400, 100, 1);
+        int32_t b5x = 592, b5y = 165;  /* row 1, col 1 */
+        int32_t bpx = 704, bpy = 243;  /* row 3, col 3 */
+        int32_t b3x = 648, b3y = 204;  /* row 2, col 2 */
+        int32_t bex = 648, bey = 243;  /* row 3, col 2 */
 
-        serial_write_string("  [2] click(100,100) inside A only: ");
+        serial_write_string("[1] click '5':\n");
+        on_mouse_click(b5x, b5y, 1);
+        on_mouse_click(b5x, b5y, 0);
+
+        serial_write_string("[2] click '+':\n");
+        on_mouse_click(bpx, bpy, 1);
+        on_mouse_click(bpx, bpy, 0);
+
+        serial_write_string("[3] click '3':\n");
+        on_mouse_click(b3x, b3y, 1);
+        on_mouse_click(b3x, b3y, 0);
+
+        serial_write_string("[4] click '=':\n");
+        on_mouse_click(bex, bey, 1);
+        on_mouse_click(bex, bey, 0);
+
+        serial_write_string("[5] click on Demo A (WM routing):\n");
         on_mouse_click(100, 100, 1);
 
-        serial_write_string("  [3] click(350,250) inside B+C overlap: ");
-        on_mouse_click(350, 250, 1);
-
-        serial_write_string("  [4] click(200,140) inside A+B overlap: ");
-        on_mouse_click(200, 140, 1);
-
-        serial_write_string("  [5] click(400,400) empty area: ");
-        on_mouse_click(400, 400, 1);
-
-        serial_write_string("Phase 13c: self-check done.\n");
-
-        /* ── Phase 14: Button state machine self-check ──
-         * Button absolute position: win_a(50,60) + btn(15,30) = (65,90) to (185,118) */
-        serial_write_string("\nPhase 14: Button self-check...\n");
-        {
-            int32_t bx = g_win_a.x + g_demo_btn.x + 20;  /* inside button */
-            int32_t by = g_win_a.y + g_demo_btn.y + 10;
-
-            serial_write_string("  [1] DOWN+UP both on button -> clicked:\n");
-            on_mouse_click(bx, by, 1);
-            on_mouse_click(bx, by, 0);
-
-            serial_write_string("  [2] DOWN on btn, UP outside -> cancelled:\n");
-            on_mouse_click(bx, by, 1);
-            on_mouse_click(400, 100, 0);
-
-            serial_write_string("  [3] click(200,200) on window, not btn -> WM:\n");
-            on_mouse_click(200, 200, 1);
-
-            serial_write_string("  [4] DOWN btn, wander out+back, UP btn -> clicked:\n");
-            on_mouse_click(bx, by, 1);
-            /* cursor moves out of button, then back — no callbacks for motion */
-            on_mouse_click(bx, by, 0);
-        }
-        serial_write_string("Phase 14: self-check done.\n");
+        serial_write_string("Phase 15: self-check done.\n");
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }

@@ -15,7 +15,7 @@ ISO_OUT     := $(BUILD_DIR)/kumo.iso
 
 # Sources
 ASM_SRCS    := boot/multiboot_header.asm arch/x86/boot.asm arch/x86/isr_stub.asm arch/x86/isr.asm arch/x86/irq.asm sched/switch.asm arch/x86/syscall.asm arch/x86/ring3.asm
-C_SRCS      := kernel/main.c drivers/serial.c drivers/mouse.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c mm/kheap.c sched/task.c arch/x86/tss.c arch/x86/syscall_dispatch.c fs/vfs.c fs/ramfs.c fs/elf.c gfx/primitives.c gfx/font.c wm/window.c wm/wm.c wm/button.c
+C_SRCS      := kernel/main.c drivers/serial.c drivers/mouse.c arch/x86/gdt.c arch/x86/idt.c arch/x86/exception.c arch/x86/pic.c arch/x86/irq_handler.c mm/multiboot.c mm/pmm.c arch/x86/paging.c mm/kheap.c sched/task.c arch/x86/tss.c arch/x86/syscall_dispatch.c fs/vfs.c fs/ramfs.c fs/elf.c gfx/primitives.c gfx/font.c wm/window.c wm/wm.c wm/button.c app/calc.c
 
 # Objects (under build/)
 ASM_OBJS    := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(notdir $(ASM_SRCS)))
@@ -56,7 +56,7 @@ $(ISO_OUT): $(KERNEL_ELF)
 
 # ── Link ──
 
-$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h wm/window.h wm/wm.h wm/button.h drivers/mouse.h
+$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h wm/window.h wm/wm.h wm/button.h app/calc.h drivers/mouse.h
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # ── Assemble (each .asm → build/<name>.o) ──
@@ -78,7 +78,7 @@ $(BUILD_DIR)/irq.o: arch/x86/irq.asm | $(BUILD_DIR)
 
 # ── Compile C (each .c → build/<name>.o) ──
 
-$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h drivers/mouse.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h fs/elf.h gfx/primitives.h gfx/font.h wm/window.h wm/wm.h wm/button.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h drivers/mouse.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h fs/elf.h gfx/primitives.h gfx/font.h wm/window.h wm/wm.h app/calc.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/serial.o: drivers/serial.c drivers/serial.h | $(BUILD_DIR)
@@ -154,6 +154,9 @@ $(BUILD_DIR)/wm.o: wm/wm.c wm/wm.h wm/window.h gfx/primitives.h mm/multiboot.h d
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/button.o: wm/button.c wm/button.h wm/window.h gfx/primitives.h gfx/font.h drivers/serial.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/calc.o: app/calc.c app/calc.h wm/wm.h wm/button.h wm/window.h gfx/primitives.h gfx/font.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ── Ensure build dir exists ──

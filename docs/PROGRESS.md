@@ -915,3 +915,74 @@ Makefile            — +wm/button.c 编译规则, +wm/button.h 依赖
 docs/
   decisions.md      — +决策-008 按钮移动视觉反馈简化（motion callback 缺位分析）
 ```
+
+## 阶段 15：基础图形应用 — 计算器 ✓ (2026-07-12)
+
+### 设计决策
+
+- **选择计算器**：16 按钮 + 状态机 + 动态文字显示，完整覆盖阶段 14
+  工具包的全部能力，无需引入新底层机制
+- **内核态实现**：`app/calc.c` 作为独立内核模块，直接调用绘图原语。
+  放到 Ring3 需要新增 4+ 个图形 syscall + 鼠标事件路由 + WM 状态暴露，
+  成本过高。当前 `init→接收事件→调用绘图原语` 的接口模式是未来
+  用户态 GUI 程序的雏形
+- **按钮数组重构**：16 个按钮自然推动从单全局变量到 `g_btns[]` 数组
+  的重构，但仅限 calc.c 内部，不修改 button_t 结构体、不建通用 widget 系统
+- **两阶段路由简化**：`on_mouse_click()` 改为 `calc_handle_click() || wm_handle_click()`，
+  main.c 不再包含任何按钮/控件概念
+
+### 布局
+
+窗口 240×280 @ (500,40)，标题 "Calculator"。
+显示区域 220×40，文本右对齐。4×4 按钮网格：52×35 每个，间距 4px。
+
+### 计算器状态机
+
+```
+g_accumulator / g_current / g_pending_op / g_entering
+
+digit(d):   g_current = entering ? g_current*10+d : d
+op(o):      如果 pending_op 则先执行; accumulator=current; pending=o; entering=0
+equals(=):  执行 pending → current=结果; pending=0
+clear(C):   全部归零
+display:    entering ? g_current : g_accumulator
+```
+
+### 验证：5 + 3 = 8
+
+| 步骤 | 点击 | 串口输出 | 说明 |
+|------|------|---------|------|
+| 1 | "5" | `Calc: display "5"` | 输入数字，entering=1 |
+| 2 | "+" | `Calc: display "5"` | 设置 pending_op，显示累加器 |
+| 3 | "3" | `Calc: display "3"` | 输入数字 |
+| 4 | "=" | `Calc: display "8"` | 5+3=8 正确 |
+| 5 | Demo A 空白区 | `WM: click hit 'Demo A'` | 双层路由互不干扰 |
+
+### GUI 路线图里程碑
+
+从阶段 9 的第一个纯色像素（`put_pixel`），到阶段 15 能做真实四则运算
+的图形计算器，KumoOS GUI 子系统主线完成：
+
+| 阶段 | 内容 | 核心交付 |
+|------|------|---------|
+| 9 | Multiboot2 framebuffer 解析 | 第一个像素点亮 |
+| 10 | 2D 绘图原语 + 位图字体 | put_pixel, draw_line, draw_rect, fill_rect, draw_string |
+| 11a | 抢占式调度 | IRQ0→schedule(), switch_to 寄存器完整性验证 |
+| 11b | PS/2 鼠标驱动 | 光标 save/restore, 3 字节包解析 |
+| 12 | 地址空间隔离 | 每任务独立 PD, probe_a/b 隔离验证 |
+| 13a | 单窗口渲染 | window_t, window_draw, 16 点像素验证 |
+| 13b | 输入路由 | mouse_click_callback 回调分层（驱动不依赖 wm） |
+| 13c | Z 序多窗口合成 | wm 窗口管理器, 点击置顶, 光标 hide/show 协调 |
+| 14 | 按钮控件 | press/release/cancel 状态机, 两阶段点击路由 |
+| 15 | 计算器应用 | 16 按钮数组, 四则运算状态机, 双层路由互不干扰 |
+
+### 文件清单
+
+```
+app/
+  calc.h            — NEW: calc_init(), calc_handle_click()
+  calc.c            — NEW: 16 按钮数组, 状态机, 显示更新, 双层路由集成
+kernel/
+  main.c            — 两阶段路由接入 calc_handle_click (替换 Phase 14 demo 按钮)
+Makefile            — +app/calc.c 编译规则, +app/calc.h 依赖
+```
