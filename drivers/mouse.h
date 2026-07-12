@@ -9,6 +9,11 @@ void mouse_init(void);
 /* Called by irq_handler on vector 44 (IRQ12). */
 void mouse_handle_interrupt(void);
 
+/* Cursor hide/show — for upper layers (wm) that need to redraw
+ * the framebuffer without corrupting the cursor save/restore state. */
+void mouse_cursor_hide(void);
+void mouse_cursor_show(void);
+
 /* Drain any stale bytes from the PS/2 output buffer.
  * Call right before sti to catch bytes the mouse sent after init. */
 void mouse_drain_buf(void);

@@ -27,6 +27,7 @@
 #include "../gfx/primitives.h"
 #include "../gfx/font.h"
 #include "../wm/window.h"
+#include "../wm/wm.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -352,19 +353,13 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
         d[i] = src[i];
 }
 
-/* ── Phase 13a: Active window (global, so click callback can reference it) ── */
-static window_t g_window;
+/* ── Phase 13c: 3 demo windows (global, referenced by wm) ── */
+static window_t g_win_a, g_win_b, g_win_c;
 
-/* ── Phase 13b: Mouse click callback ──
- * Registered with mouse driver; called from IRQ12 context on button change.
- * The mouse driver knows nothing about windows — it just reports raw events. */
+/* ── Phase 13c: Mouse click callback → window manager ── */
 static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
 {
-    (void)buttons;
-    if (window_hit_test(&g_window, x, y))
-        serial_write_string("  -> inside window\n");
-    else
-        serial_write_string("  -> outside window\n");
+    wm_handle_click(x, y, buttons);
 }
 
 void kmain(unsigned int magic, void *multiboot_info) {
@@ -434,33 +429,57 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
         serial_write_string("FB: Phase 10 drawing complete.\n");
 
-        /* ── Phase 13a: Single window rendering ── */
-        serial_write_string("\n=== Phase 13a: Window ===\n");
-        {
-            g_window.x = 30; g_window.y = 140;
-            g_window.w = 280; g_window.h = 200;
-            g_window.title = "Kumo Window";
-            g_window.title_bar_color = make_color(0x30, 0x40, 0x60);
-            g_window.body_color = make_color(0xD0, 0xD0, 0xD0);
-            window_draw(&g_window);
-            serial_write_string("WM: Window drawn.\n");
-        }
+        /* ── Phase 13c: Multi-window with Z-ordering ── */
+        serial_write_string("\n=== Phase 13c: Window Manager ===\n");
+
+        g_win_a.x = 50;  g_win_a.y = 60;  g_win_a.w = 220; g_win_a.h = 160;
+        g_win_a.title = "Demo A";
+        g_win_a.title_bar_color = make_color(0x80, 0x30, 0x20);
+        g_win_a.body_color       = make_color(0xFF, 0xE8, 0xE0);
+
+        g_win_b.x = 160; g_win_b.y = 120; g_win_b.w = 220; g_win_b.h = 160;
+        g_win_b.title = "Demo B";
+        g_win_b.title_bar_color = make_color(0x20, 0x70, 0x30);
+        g_win_b.body_color       = make_color(0xE0, 0xFF, 0xE0);
+
+        g_win_c.x = 270; g_win_c.y = 180; g_win_c.w = 220; g_win_c.h = 160;
+        g_win_c.title = "Demo C";
+        g_win_c.title_bar_color = make_color(0x20, 0x30, 0x80);
+        g_win_c.body_color       = make_color(0xE0, 0xE8, 0xFF);
+
+        wm_add_window(&g_win_a);  /* bottom */
+        wm_add_window(&g_win_b);
+        wm_add_window(&g_win_c);  /* top */
+        wm_draw_all();
+        serial_write_string("WM: 3 windows drawn (A bottom, C top).\n");
 
         /* ── Phase 11b: Mouse driver — init after FB is ready ── */
         serial_write_string("\n=== Phase 11b: Mouse ===\n");
         mouse_init();
 
-        /* Phase 13b: register click callback (after mouse_init, before sti) */
+        /* Phase 13c: register click callback → wm */
         g_mouse_click_callback = on_mouse_click;
 
-        /* Self-check: verify hit test at 4 boundary conditions */
-        serial_write_string("Phase 13b: hit test self-check...\n");
-        on_mouse_click(160, 270, 1);   /* inside window body */
-        on_mouse_click(800, 500, 1);   /* outside window */
-        on_mouse_click(35,  146, 1);   /* inside window (title bar) */
-        on_mouse_click(29,  139, 1);   /* just outside (left+above) */
-        on_mouse_click(30,  140, 1);   /* top-left corner (boundary, inside) */
-        serial_write_string("Phase 13b: self-check done.\n");
+        /* Self-check: 5 click points verifying Z-ordering + hit test */
+        serial_write_string("\nPhase 13c: Z-order self-check...\n");
+        serial_write_string("Initial Z: A, B, C\n");
+
+        serial_write_string("  [1] click(400,100) empty area: ");
+        on_mouse_click(400, 100, 1);
+
+        serial_write_string("  [2] click(100,100) inside A only: ");
+        on_mouse_click(100, 100, 1);
+
+        serial_write_string("  [3] click(350,250) inside B+C overlap: ");
+        on_mouse_click(350, 250, 1);
+
+        serial_write_string("  [4] click(200,140) inside A+B overlap: ");
+        on_mouse_click(200, 140, 1);
+
+        serial_write_string("  [5] click(400,400) empty area: ");
+        on_mouse_click(400, 400, 1);
+
+        serial_write_string("Phase 13c: self-check done.\n");
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }

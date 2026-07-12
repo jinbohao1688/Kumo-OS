@@ -295,6 +295,11 @@ void mouse_init(void)
     serial_write_string("), init complete.\n");
 }
 
+/* ── Cursor hide/show (exported for wm) ── */
+
+void mouse_cursor_hide(void) { cursor_restore(); }
+void mouse_cursor_show(void) { cursor_draw();   }
+
 /* Drain stale bytes from the PS/2 output buffer right before sti. */
 void mouse_drain_buf(void)
 {

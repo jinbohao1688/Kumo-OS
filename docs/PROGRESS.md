@@ -800,3 +800,65 @@ wm/
 kernel/
   main.c            — +on_mouse_click() 回调, +回调注册, +5点位自检
 ```
+
+## 阶段 13c：Z 序 + 多窗口合成 ✓ (2026-07-12)
+
+### 设计决策
+
+- **窗口管理器 `wm/wm.c`**：管理 Z 序窗口列表，固定大小指针数组
+  `window_t* g_windows[MAX_WINDOWS]`（MAX=16），索引 0 = 底层
+- **`wm_draw_all()`**：桌面背景填充 → bottom→top 逐个绘制窗口，
+  内部处理光标 hide/show（复用 mouse.c 的 cursor_restore/draw）
+- **`wm_handle_click()`**：top→bottom 命中检测，命中则将该窗口移至
+  数组末尾（置顶）并触发全量重绘
+- **光标接口导出**：`mouse_cursor_hide/show()` 从 mouse.c 导出，
+  wm 层合法依赖 drivers 层（上层依赖下层）
+- **无双缓冲**：通过 bottom→top 绘制顺序保证遮挡正确
+
+### 依赖关系
+
+```
+wm/wm.c  →  wm/window.h  (window_t, window_draw)
+         →  drivers/mouse.h  (mouse_cursor_hide/show)
+         →  gfx/primitives.h  (fill_rect for desktop)
+         →  mm/multiboot.h  (g_framebuffer)
+
+kernel/main.c  →  wm/wm.h  (wm_add_window, wm_draw_all, wm_handle_click)
+               →  drivers/mouse.h  (注册回调)
+```
+
+### IRQ12 上下文重绘分析
+
+`wm_handle_click()` 的完整调用链运行在 IRQ12 中断上下文（IF=0）中。
+`wm_draw_all()` 执行全屏重绘（~1.15M put_pixel @ 1024×768 + 3 窗口），
+QEMU TCG 下估计数百毫秒，会延迟 PIT 18.2Hz tick 约 10~20 次。
+8259 PIC 电平触发保证中断不丢失，仅调度延迟。详见 Decision-007。
+
+### 验证（5 点位 Z 序自检）
+
+窗口布局：A(50,60) 220×160, B(160,120) 220×160, C(270,180) 220×160
+初始 Z 序：A(bottom), B, C(top)
+
+| # | 坐标 | 描述 | 结果 | Z 序变化 |
+|---|------|------|------|----------|
+| 1 | (400,100) | 空白区域 | no hit | 不变 |
+| 2 | (100,100) | 仅 A 内 | A 置顶 | A,B,C → B,C,A |
+| 3 | (350,250) | B+C 重叠区 | C 置顶 | B,C,A → B,A,C |
+| 4 | (200,140) | A+B 重叠区 | A 置顶 | B,A,C → B,C,A |
+| 5 | (400,400) | 空白区域 | no hit | 不变 |
+
+### 文件清单
+
+```
+wm/
+  wm.h              — NEW: 窗口管理器接口 (wm_add_window, wm_draw_all, wm_handle_click)
+  wm.c              — NEW: Z 序数组管理, 点击置顶, 全量重绘, 光标 hide/show 协调
+drivers/
+  mouse.h           — +mouse_cursor_hide/show 声明
+  mouse.c           — +mouse_cursor_hide/show 实现（复用 cursor_restore/draw）
+kernel/
+  main.c            — 3 demo 窗口 (A/B/C) 替换单窗口, on_mouse_click→wm_handle_click
+Makefile            — +wm/wm.c 编译规则, +wm/wm.h 依赖
+docs/
+  decisions.md      — +决策-007 IRQ12 上下文重绘延迟分析（计时估算+PIC电平触发+3行兜底方案）
+```

@@ -207,3 +207,63 @@ cursor_draw。更通用的方案是引入 damage region 机制，将光标区域
 
 **重要**：这是一个**主动简化**，不是"已验证过没问题"的结论。当前阶段
 依赖的前提（窗口静态、sti 前一次性绘制）会在后续子阶段被推翻。
+
+## 决策-007: wm_draw_all() 在 IRQ12 上下文同步执行 — 已知延迟，暂不解决
+
+**日期**：2026-07-12（阶段 13c）
+
+**背景**：阶段 13c 引入多窗口 Z 序管理。鼠标点击 → `wm_handle_click()`
+→ `wm_draw_all()` 的完整调用链运行在 IRQ12 的中断上下文（IF=0）。
+`wm_draw_all()` 执行全屏桌面背景填充 + 所有窗口 bottom→top 重绘，
+总像素量约 1.15M（1024×768 桌面 + 3 个 400×300 窗口）。
+
+**耗时估算**（QEMU TCG 模拟，无 KVM）：
+
+| 操作 | 像素量 |
+|------|--------|
+| 桌面背景 fill_rect | ~786K |
+| 3 窗口 body fill | ~324K |
+| 3 窗口标题栏 fill | ~24K |
+| 3 窗口边框 draw_rect | ~15K |
+| 标题 draw_string | ~4K |
+| **合计** | **~1.15M put_pixel** |
+
+单次 `put_pixel()` 在 QEMU TCG 中约几十到几百条宿主机指令。
+保守估计全量重绘需 **数百毫秒到 1 秒**。
+
+**PIT 与中断时序影响**：当前 PIT 频率 18.2 Hz（BIOS 默认，未重编程），
+tick 周期 ≈ 55ms。一次 `wm_draw_all()` 会延迟 10~20 个 tick。
+
+**但中断不丢失**。8259 PIC 对 CPU 的 INTR 信号是电平触发（level-sensitive）：
+IF=0 期间 PIC 持续维持 INTR 有效；IRQ12 的 `iret` 恢复 IF=1 后，CPU
+立即响应排队的 IRQ0。tick 计数落后一截，但 PIT 硬件自由运行，时间基准
+不漂移。
+
+**决策**：当前阶段**不解决**此延迟问题。理由：
+
+1. KumoOS 无实时性需求，点击时调度延迟几百毫秒在当前开发阶段可接受
+2. 阶段 13d（damage tracking）将全屏 ~1M 像素缩小到脏矩形 ~100K 像素，
+   重绘耗时自动降一个数量级，问题自然缓解
+3. 阶段 13c 只有 3 个 demo 窗口，手动点击频率极低，用户感知不到
+
+**备选方案（3 行兜底）**：如果 damage tracking 之前就需要解决，只需：
+
+```c
+/* IRQ12 回调中设置 flag，不在中断上下文重绘 */
+static volatile int wm_needs_redraw = 0;
+
+/* idle loop 中检查并执行（IF=1，不阻塞中断） */
+if (wm_needs_redraw) { wm_draw_all(); wm_needs_redraw = 0; }
+```
+
+IRQ12 回调改为 `wm_needs_redraw = 1;` 即返回，重绘在 idle loop 中以
+IF=1 执行，完全解耦中断延迟与重绘开销。3 行改动，不涉及架构调整。
+
+**触发条件**（何时需要采取备选方案）：
+- 窗口数量增加导致重绘时间超过 100ms，或
+- 引入窗口拖动（motion 事件频率远高于 click），或
+- 出现计时相关 bug 追溯到 IRQ0 延迟
+
+**后续动作**：阶段 13d（damage tracking）实现后，全量重绘次数大幅减少，
+此问题自动降级。如 damage tracking 后仍有关键路径触发全屏重绘，再评估
+是否引入 deferred redraw。
