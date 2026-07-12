@@ -17,6 +17,12 @@ irq0_entry:
     push 32         ; vector 32 = IRQ0 (timer)
     jmp irq_common_stub
 
+global irq12_entry
+irq12_entry:
+    push 0          ; dummy error code
+    push 44         ; vector 44 = IRQ12 (PS/2 mouse)
+    jmp irq_common_stub
+
 ; ── Common IRQ stub ──
 ;
 ; Separate from isr_common_stub because it calls irq_handler

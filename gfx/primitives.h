@@ -12,6 +12,9 @@ uint32_t make_color(uint8_t r, uint8_t g, uint8_t b);
  * dropped (no #PF, no framebuffer corruption). */
 void put_pixel(uint32_t x, uint32_t y, uint32_t packed_color);
 
+/* Read a single pixel from the framebuffer.  Returns 0 for out-of-range. */
+uint32_t get_pixel(uint32_t x, uint32_t y);
+
 /* Bresenham line algorithm (integer-only). */
 void draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
                uint32_t packed_color);

@@ -21,6 +21,7 @@
 #include "../build/regtest_a.h"
 #include "../build/regtest_b.h"
 #include "../fs/elf.h"
+#include "../drivers/mouse.h"
 #include "../gfx/primitives.h"
 #include "../gfx/font.h"
 
@@ -401,6 +402,10 @@ void kmain(unsigned int magic, void *multiboot_info) {
         draw_string(50, 114, "0123456789 !@#$%^&*()[]{}<>", make_color(0xFF, 0x88, 0x00));
 
         serial_write_string("FB: Phase 10 drawing complete.\n");
+
+        /* ── Phase 11b: Mouse driver — init after FB is ready ── */
+        serial_write_string("\n=== Phase 11b: Mouse ===\n");
+        mouse_init();
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }
@@ -557,6 +562,12 @@ void kmain(unsigned int magic, void *multiboot_info) {
         serial_write_hex(rtb ? rtb->id : 0);
         serial_write_string("\n");
     }
+
+    /* Drain any PS/2 mouse bytes that arrived after mouse_init.
+     * The mouse starts streaming after Enable Reporting and may have
+     * sent data before sti; if left in the buffer these bytes desync
+     * the 3-byte packet assembly. */
+    mouse_drain_buf();
 
     serial_write_string("Shell: enabling interrupts (sti) + entering idle/scheduler loop...\n");
     __asm__ volatile("sti");

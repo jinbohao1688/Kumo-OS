@@ -37,7 +37,7 @@ void multiboot_parse(unsigned int magic, void *info)
 
             serial_write_string("Framebuffer: ");
             serial_write_hex(g_framebuffer.width);
-            serial_write_string("x");
+            serial_write_string(" x ");
             serial_write_hex(g_framebuffer.height);
             serial_write_string(" bpp=");
             serial_write_hex(g_framebuffer.bpp);

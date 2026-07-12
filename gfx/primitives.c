@@ -43,6 +43,30 @@ void put_pixel(uint32_t x, uint32_t y, uint32_t packed_color)
     }
 }
 
+/* ── get_pixel: read a single pixel from the framebuffer ── */
+
+uint32_t get_pixel(uint32_t x, uint32_t y)
+{
+    if (x >= g_framebuffer.width || y >= g_framebuffer.height)
+        return 0;
+
+    uint8_t *fb = (uint8_t *)g_framebuffer.addr;
+    uint32_t off = y * g_framebuffer.pitch + x * (g_framebuffer.bpp / 8);
+
+    switch (g_framebuffer.bpp) {
+    case 32:
+        return *(uint32_t *)(fb + off);
+    case 24:
+        return (uint32_t)fb[off]
+             | ((uint32_t)fb[off + 1] << 8)
+             | ((uint32_t)fb[off + 2] << 16);
+    case 16:
+        return (uint32_t)*(uint16_t *)(fb + off);
+    default:
+        return 0;
+    }
+}
+
 /* ── Bresenham line algorithm ── */
 
 void draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
