@@ -82,22 +82,28 @@ void draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
     if (adx >= ady) {
         /* Shallow slope — step along x */
         int32_t err = adx / 2;
-        uint32_t y = y0;
-        for (uint32_t x = x0; ; x += (uint32_t)sx) {
-            put_pixel(x, y, packed_color);
-            if (x == x1) break;
+        int32_t y = (int32_t)y0;
+        for (int32_t x = (int32_t)x0; ; x += sx) {
+            if (x < 0 || (uint32_t)x >= g_framebuffer.width ||
+                y < 0 || (uint32_t)y >= g_framebuffer.height)
+                break;
+            put_pixel((uint32_t)x, (uint32_t)y, packed_color);
+            if (x == (int32_t)x1) break;
             err -= ady;
-            if (err < 0) { err += adx; y = (uint32_t)((int32_t)y + sy); }
+            if (err < 0) { err += adx; y += sy; }
         }
     } else {
         /* Steep slope — step along y */
         int32_t err = ady / 2;
-        uint32_t x = x0;
-        for (uint32_t y = y0; ; y += (uint32_t)sy) {
-            put_pixel(x, y, packed_color);
-            if (y == y1) break;
+        int32_t x = (int32_t)x0;
+        for (int32_t y = (int32_t)y0; ; y += sy) {
+            if (x < 0 || (uint32_t)x >= g_framebuffer.width ||
+                y < 0 || (uint32_t)y >= g_framebuffer.height)
+                break;
+            put_pixel((uint32_t)x, (uint32_t)y, packed_color);
+            if (y == (int32_t)y1) break;
             err -= adx;
-            if (err < 0) { err += ady; x = (uint32_t)((int32_t)x + sx); }
+            if (err < 0) { err += ady; x += sx; }
         }
     }
 }
