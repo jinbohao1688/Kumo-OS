@@ -862,3 +862,56 @@ Makefile            — +wm/wm.c 编译规则, +wm/wm.h 依赖
 docs/
   decisions.md      — +决策-007 IRQ12 上下文重绘延迟分析（计时估算+PIC电平触发+3行兜底方案）
 ```
+
+## 阶段 14：基础控件 — 按钮 ✓ (2026-07-12)
+
+### 设计决策
+
+- **最小控件集合：只做按钮**。状态机只有 IDLE↔PRESSED 两条边，
+  验证通过后其他控件是同样模式的重复
+- **坐标相对于所属窗口**：`button_t.x/y` 是窗口内偏移，绝对坐标 =
+  `parent->x + btn->x`。窗口移动时按钮跟随，无需更新坐标
+- **不修改 `window_t`**：按钮通过独立全局变量关联到父窗口
+  `g_btn_parent`，`window_t` 保持纯渲染数据结构
+- **两阶段点击路由**：`on_mouse_click()` 先交按钮层处理（Phase 1），
+  不消耗的事件再交给 wm 层做 Z 序处理（Phase 2）
+- **全局 `g_pressed_button` 指针**：记录"当前被按住未释放的按钮"，
+  释放时只看光标位置判定触发/取消，移动过程中的光标进出不影响最终判断
+- **视觉反馈简化**：按下后保持 pressed 色直到释放，光标移出不恢复 idle 色。
+  原因：缺少 motion callback 机制 + 无法在自检中验证（Decision-008）
+
+### 按钮状态机
+
+```
+MOUSE_DOWN 在按钮上 → g_pressed = btn, 重绘 pressed 色
+MOUSE_UP   在按钮上 → 触发 on_click + 重绘 idle 色 + g_pressed = NULL
+MOUSE_UP   在按钮外 → 取消 + 重绘 idle 色 + g_pressed = NULL
+MOUSE_DOWN 在按钮外 → 不消费，往下传递给 WM 层
+```
+
+### 验证（4 路径自检）
+
+按钮绝对位置：window A(50,60) + btn(15,30) = (65,90)-(185,118)
+
+| # | 操作 | 预期 | 实际输出 | 结果 |
+|---|------|------|---------|------|
+| 1 | DOWN+UP 同在按钮上 | clicked + 回调 | `clicked!` + `on_click fired!` | PASS |
+| 2 | DOWN 按钮, UP 外部 | cancelled | `cancelled` | PASS |
+| 3 | 点击空白窗口区域 | WM 处理 | `WM: click hit 'Demo B'` | PASS |
+| 4 | DOWN→移出→移回→UP 按钮 | clicked（释放位置决定） | `clicked!` + `on_click fired!` | PASS |
+
+测试 4 与测试 1 输出相同，验证了 `g_pressed_button` 的核心语义：
+只看释放瞬间光标位置，移动路径不参与判断。
+
+### 文件清单
+
+```
+wm/
+  button.h          — NEW: button_t 结构体, button_hit_test() 内联, button_draw/handle_down/handle_up 声明
+  button.c          — NEW: 按钮绘制 + 状态机 (g_pressed_button/g_pressed_parent)
+kernel/
+  main.c            — demo 按钮 (on window A) + 两阶段点击路由 (按钮优先于 WM)
+Makefile            — +wm/button.c 编译规则, +wm/button.h 依赖
+docs/
+  decisions.md      — +决策-008 按钮移动视觉反馈简化（motion callback 缺位分析）
+```
