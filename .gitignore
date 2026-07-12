@@ -18,3 +18,9 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Serial log dumps (generated during QEMU testing)
+kumo_serial_log*.txt
+
+# Claude local settings (contains per-machine paths/permissions)
+.claude/settings.local.json
