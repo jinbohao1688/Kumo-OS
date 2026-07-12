@@ -352,6 +352,21 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
         d[i] = src[i];
 }
 
+/* ── Phase 13a: Active window (global, so click callback can reference it) ── */
+static window_t g_window;
+
+/* ── Phase 13b: Mouse click callback ──
+ * Registered with mouse driver; called from IRQ12 context on button change.
+ * The mouse driver knows nothing about windows — it just reports raw events. */
+static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
+{
+    (void)buttons;
+    if (window_hit_test(&g_window, x, y))
+        serial_write_string("  -> inside window\n");
+    else
+        serial_write_string("  -> outside window\n");
+}
+
 void kmain(unsigned int magic, void *multiboot_info) {
     serial_init();
     serial_write_string("Kumo OS booted.\n");
@@ -422,20 +437,30 @@ void kmain(unsigned int magic, void *multiboot_info) {
         /* ── Phase 13a: Single window rendering ── */
         serial_write_string("\n=== Phase 13a: Window ===\n");
         {
-            window_t win = {
-                .x = 30, .y = 140,
-                .w = 280, .h = 200,
-                .title = "Kumo Window",
-                .title_bar_color = make_color(0x30, 0x40, 0x60),
-                .body_color = make_color(0xD0, 0xD0, 0xD0),
-            };
-            window_draw(&win);
+            g_window.x = 30; g_window.y = 140;
+            g_window.w = 280; g_window.h = 200;
+            g_window.title = "Kumo Window";
+            g_window.title_bar_color = make_color(0x30, 0x40, 0x60);
+            g_window.body_color = make_color(0xD0, 0xD0, 0xD0);
+            window_draw(&g_window);
             serial_write_string("WM: Window drawn.\n");
         }
 
         /* ── Phase 11b: Mouse driver — init after FB is ready ── */
         serial_write_string("\n=== Phase 11b: Mouse ===\n");
         mouse_init();
+
+        /* Phase 13b: register click callback (after mouse_init, before sti) */
+        g_mouse_click_callback = on_mouse_click;
+
+        /* Self-check: verify hit test at 4 boundary conditions */
+        serial_write_string("Phase 13b: hit test self-check...\n");
+        on_mouse_click(160, 270, 1);   /* inside window body */
+        on_mouse_click(800, 500, 1);   /* outside window */
+        on_mouse_click(35,  146, 1);   /* inside window (title bar) */
+        on_mouse_click(29,  139, 1);   /* just outside (left+above) */
+        on_mouse_click(30,  140, 1);   /* top-left corner (boundary, inside) */
+        serial_write_string("Phase 13b: self-check done.\n");
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }

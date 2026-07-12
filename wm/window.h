@@ -15,4 +15,10 @@ typedef struct {
 
 void window_draw(const window_t *win);
 
+static inline int window_hit_test(const window_t *win, int32_t x, int32_t y)
+{
+    return (x >= win->x && x < (int32_t)(win->x + win->w) &&
+            y >= win->y && y < (int32_t)(win->y + win->h));
+}
+
 #endif

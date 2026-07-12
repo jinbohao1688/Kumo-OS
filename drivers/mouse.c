@@ -51,6 +51,9 @@ static uint32_t cursor_backup[CURSOR_W * CURSOR_H];
 static uint8_t  mouse_cycle;
 static uint8_t  mouse_bytes[3];
 
+/* Phase 13b: click callback — registered by upper layer */
+mouse_click_callback_t g_mouse_click_callback;
+
 /* ── PS/2 controller helpers ── */
 
 static void mouse_wait_write(void)
@@ -150,6 +153,10 @@ static void mouse_process_packet(void)
         if (buttons == 0) serial_write_string("(none)");
         serial_write_string("\n");
         last_buttons = buttons;
+
+        /* Phase 13b: notify upper layer of click event */
+        if (g_mouse_click_callback)
+            g_mouse_click_callback(cursor_x, cursor_y, buttons);
     }
 
     /* ── Movement ── */
