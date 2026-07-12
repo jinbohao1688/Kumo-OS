@@ -25,4 +25,10 @@ static inline int window_hit_test(const window_t *win, int32_t x, int32_t y)
             y >= win->y && y < (int32_t)(win->y + win->h));
 }
 
+static inline int window_hit_test_title_bar(const window_t *win, int32_t x, int32_t y)
+{
+    return (x >= win->x && x < (int32_t)(win->x + win->w) &&
+            y >= win->y && y < (int32_t)(win->y + TITLE_BAR_H));
+}
+
 #endif

@@ -54,6 +54,9 @@ static uint8_t  mouse_bytes[3];
 /* Phase 13b: click callback — registered by upper layer */
 mouse_click_callback_t g_mouse_click_callback;
 
+/* Phase 16: move callback — for window drag on every movement packet */
+mouse_move_callback_t g_mouse_move_callback;
+
 /* ── PS/2 controller helpers ── */
 
 static void mouse_wait_write(void)
@@ -174,6 +177,10 @@ static void mouse_process_packet(void)
             cursor_y = (int32_t)g_framebuffer.height - CURSOR_H;
 
         cursor_draw();
+
+        /* Phase 16: notify upper layer of movement (window drag) */
+        if (g_mouse_move_callback)
+            g_mouse_move_callback((int32_t)dx, (int32_t)dy);
     }
 }
 

@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include "../drivers/serial.h"
 #include "../arch/x86/gdt.h"
 #include "../arch/x86/idt.h"
@@ -357,14 +358,58 @@ static void copy_code(uint32_t dest_page, const uint8_t *src, uint32_t len)
 /* ── Phase 13c: 3 demo windows (global, referenced by wm) ── */
 static window_t g_win_a, g_win_b, g_win_c;
 
+/* ── Phase 16: Window drag state ── */
+#define MIN_GRIP 30
+static window_t *g_drag_win = NULL;
+
+/* ── Phase 16: Mouse move callback — window drag ── */
+static void on_mouse_move(int32_t dx, int32_t dy)
+{
+    if (!g_drag_win) return;
+
+    g_drag_win->x += dx;
+    g_drag_win->y -= dy;  /* PS/2 dy is inverted (up = positive) */
+
+    /* Clamp: left/top must be >= 0 (safety: draw_line negative-coord
+     * protection).  Right/bottom allow partial off-screen but keep
+     * MIN_GRIP px of title bar visible for re-grab. */
+    int32_t max_x = (int32_t)g_framebuffer.width - MIN_GRIP;
+    int32_t max_y = (int32_t)g_framebuffer.height - TITLE_BAR_H;
+
+    if (g_drag_win->x < 0)    g_drag_win->x = 0;
+    if (g_drag_win->x > max_x) g_drag_win->x = max_x;
+    if (g_drag_win->y < 0)    g_drag_win->y = 0;
+    if (g_drag_win->y > max_y) g_drag_win->y = max_y;
+
+    wm_draw_all();
+}
+
 /* ── Phase 15: Two-phase click routing ──
  * Phase 1: Calculator app (button state machine).
  * Phase 2: Window manager (Z-order, only if calc didn't consume event). */
 static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
 {
-    if (calc_handle_click(x, y, buttons))
-        return;
-    wm_handle_click(x, y, buttons);
+    if (buttons & 1) {
+        /* Mouse-down: title bar hit test for drag (topmost window first) */
+        window_t *hit = wm_find_window_at(x, y);
+        if (hit && window_hit_test_title_bar(hit, x, y)) {
+            wm_bring_to_top(hit);
+            g_drag_win = hit;
+            return;
+        }
+        if (calc_handle_click(x, y, buttons))
+            return;
+        wm_handle_click(x, y, buttons);
+    } else {
+        /* Mouse-up: end drag if active */
+        if (g_drag_win) {
+            g_drag_win = NULL;
+            return;
+        }
+        if (calc_handle_click(x, y, buttons))
+            return;
+        wm_handle_click(x, y, buttons);
+    }
 }
 
 void kmain(unsigned int magic, void *multiboot_info) {
@@ -468,6 +513,8 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
         /* Phase 15: register click callback → calc + wm */
         g_mouse_click_callback = on_mouse_click;
+        /* Phase 16: register move callback → window drag */
+        g_mouse_move_callback = on_mouse_move;
 
         /* ── Phase 15: Calculator self-check — 5 + 3 = 8 ──
          * Calculator window at (500,40), 240×280.
@@ -503,6 +550,71 @@ void kmain(unsigned int magic, void *multiboot_info) {
         on_mouse_click(100, 100, 1);
 
         serial_write_string("Phase 15: self-check done.\n");
+
+        /* ── Phase 16: Window drag self-check ──
+         * Demo A at (50,60), 220×160, title bar y=60..80.
+         * Drag Demo A by (100, 80) to approx (150, 140). */
+        serial_write_string("\nPhase 16: Drag self-check...\n");
+
+        int32_t pre_x = g_win_a.x, pre_y = g_win_a.y;
+        serial_write_string("  Pre-drag position: (");
+        serial_write_hex((uint32_t)pre_x);
+        serial_write_string(", ");
+        serial_write_hex((uint32_t)pre_y);
+        serial_write_string(")\n");
+
+        /* mouse-down on Demo A title bar center ≈ (160, 70) */
+        serial_write_string("  [1] mouse-down on Demo A title bar:\n");
+        on_mouse_click(160, 70, 1);
+
+        /* simulate drag motion: 100 right, 80 down in 4 steps */
+        serial_write_string("  [2] drag +100,+80 via move callback:\n");
+        on_mouse_move(25, 0);   /* PS/2 dy inverted: window y -= -20 = +20 */
+        on_mouse_move(0, -20);
+        on_mouse_move(25, 0);
+        on_mouse_move(0, -20);
+        on_mouse_move(25, 0);
+        on_mouse_move(0, -20);
+        on_mouse_move(25, 0);
+        on_mouse_move(0, -20);
+
+        /* mouse-up */
+        serial_write_string("  [3] mouse-up:\n");
+        on_mouse_click(260, 150, 0);
+
+        int32_t post_x = g_win_a.x, post_y = g_win_a.y;
+        serial_write_string("  Post-drag position: (");
+        serial_write_hex((uint32_t)post_x);
+        serial_write_string(", ");
+        serial_write_hex((uint32_t)post_y);
+        serial_write_string(")\n");
+
+        if (post_x == pre_x + 100 && post_y == pre_y + 80) {
+            serial_write_string("Phase 16: Drag self-check PASS.\n");
+        } else {
+            serial_write_string("Phase 16: Drag self-check FAIL (expected dx=100,dy=80).\n");
+        }
+
+        /* ── Phase 16: draw_line safety self-check ──
+         * Temporarily set a window to negative coordinates and call
+         * wm_draw_all().  The repaired draw_line must NOT hang. */
+        serial_write_string("\nPhase 16: draw_line safety check (negative coords)...\n");
+
+        /* Save & poison: force g_win_a to a negative-left position */
+        int32_t save_x = g_win_a.x;
+        g_win_a.x = -100;
+        g_win_a.y = -50;
+
+        serial_write_string("  Calling wm_draw_all() with poisoned coordinates...\n");
+        wm_draw_all();
+        serial_write_string("  wm_draw_all() returned — draw_line did NOT hang.\n");
+
+        /* Restore */
+        g_win_a.x = save_x;
+        g_win_a.y = post_y;
+        wm_draw_all();
+
+        serial_write_string("Phase 16: draw_line safety check PASS.\n");
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }

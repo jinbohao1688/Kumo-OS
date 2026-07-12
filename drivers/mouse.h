@@ -27,4 +27,9 @@ void mouse_drain_buf(void);
 typedef void (*mouse_click_callback_t)(int32_t x, int32_t y, uint8_t buttons);
 extern mouse_click_callback_t g_mouse_click_callback;
 
+/* ── Mouse move callback (Phase 16: window drag) ──
+ * Called on every movement packet (even without button changes). */
+typedef void (*mouse_move_callback_t)(int32_t dx, int32_t dy);
+extern mouse_move_callback_t g_mouse_move_callback;
+
 #endif

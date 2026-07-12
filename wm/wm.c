@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include "wm.h"
 #include "../gfx/primitives.h"
 #include "../mm/multiboot.h"
@@ -68,4 +69,28 @@ void wm_handle_click(int32_t x, int32_t y, uint8_t buttons)
     serial_write_string(", ");
     serial_write_hex((uint32_t)y);
     serial_write_string(") -> no window hit\n");
+}
+
+window_t *wm_find_window_at(int32_t x, int32_t y)
+{
+    for (int i = g_window_count - 1; i >= 0; i--) {
+        if (window_hit_test(g_windows[i], x, y))
+            return g_windows[i];
+    }
+    return NULL;
+}
+
+void wm_bring_to_top(window_t *win)
+{
+    int idx = -1;
+    for (int i = 0; i < g_window_count; i++) {
+        if (g_windows[i] == win) { idx = i; break; }
+    }
+    if (idx < 0 || idx == g_window_count - 1) return;
+
+    for (int j = idx; j < g_window_count - 1; j++)
+        g_windows[j] = g_windows[j + 1];
+    g_windows[g_window_count - 1] = win;
+
+    wm_draw_all();
 }
