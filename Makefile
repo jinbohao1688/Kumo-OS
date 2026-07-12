@@ -56,7 +56,7 @@ $(ISO_OUT): $(KERNEL_ELF)
 
 # ── Link ──
 
-$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h
+$(KERNEL_ELF): $(OBJS) linker.ld $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # ── Assemble (each .asm → build/<name>.o) ──
@@ -78,7 +78,7 @@ $(BUILD_DIR)/irq.o: arch/x86/irq.asm | $(BUILD_DIR)
 
 # ── Compile C (each .c → build/<name>.o) ──
 
-$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h drivers/mouse.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h fs/elf.h gfx/primitives.h gfx/font.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c drivers/serial.h drivers/mouse.h arch/x86/gdt.h arch/x86/idt.h arch/x86/pic.h arch/x86/irq.h mm/multiboot.h arch/x86/paging.h arch/x86/tss.h arch/x86/syscall.h fs/vfs.h fs/ramfs.h fs/elf.h gfx/primitives.h gfx/font.h $(BUILD_DIR)/test_ramfs.h $(BUILD_DIR)/shell.h $(BUILD_DIR)/test_bad_ptr.h $(BUILD_DIR)/test_boundary.h $(BUILD_DIR)/test_null.h $(BUILD_DIR)/hello_elf.h $(BUILD_DIR)/regtest_a.h $(BUILD_DIR)/regtest_b.h $(BUILD_DIR)/test_probe_a.h $(BUILD_DIR)/test_probe_b.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/serial.o: drivers/serial.c drivers/serial.h | $(BUILD_DIR)
@@ -90,7 +90,7 @@ $(BUILD_DIR)/gdt.o: arch/x86/gdt.c arch/x86/gdt.h drivers/serial.h | $(BUILD_DIR
 $(BUILD_DIR)/idt.o: arch/x86/idt.c arch/x86/idt.h arch/x86/isr.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/exception.o: arch/x86/exception.c arch/x86/isr.h drivers/serial.h | $(BUILD_DIR)
+$(BUILD_DIR)/exception.o: arch/x86/exception.c arch/x86/isr.h sched/task.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pic.o: arch/x86/pic.c arch/x86/pic.h drivers/serial.h | $(BUILD_DIR)
@@ -105,7 +105,7 @@ $(BUILD_DIR)/multiboot.o: mm/multiboot.c mm/multiboot.h drivers/serial.h | $(BUI
 $(BUILD_DIR)/pmm.o: mm/pmm.c mm/pmm.h mm/multiboot.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/paging.o: arch/x86/paging.c arch/x86/paging.h mm/pmm.h mm/multiboot.h drivers/serial.h | $(BUILD_DIR)
+$(BUILD_DIR)/paging.o: arch/x86/paging.c arch/x86/paging.h mm/pmm.h mm/multiboot.h sched/task.h drivers/serial.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/kheap.o: mm/kheap.c mm/kheap.h mm/pmm.h drivers/serial.h | $(BUILD_DIR)
@@ -192,3 +192,11 @@ $(BUILD_DIR)/regtest_a.h: user/regtest_a.asm | $(BUILD_DIR)
 $(BUILD_DIR)/regtest_b.h: user/regtest_b.asm | $(BUILD_DIR)
 	nasm -f bin $< -o $(BUILD_DIR)/regtest_b.bin
 	xxd -i $(BUILD_DIR)/regtest_b.bin > $@
+
+$(BUILD_DIR)/test_probe_a.h: user/test_probe_a.asm | $(BUILD_DIR)
+	nasm -f bin $< -o $(BUILD_DIR)/test_probe_a.bin
+	xxd -i $(BUILD_DIR)/test_probe_a.bin > $@
+
+$(BUILD_DIR)/test_probe_b.h: user/test_probe_b.asm | $(BUILD_DIR)
+	nasm -f bin $< -o $(BUILD_DIR)/test_probe_b.bin
+	xxd -i $(BUILD_DIR)/test_probe_b.bin > $@

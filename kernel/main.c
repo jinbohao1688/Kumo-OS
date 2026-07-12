@@ -20,6 +20,8 @@
 #include "../build/hello_elf.h"
 #include "../build/regtest_a.h"
 #include "../build/regtest_b.h"
+#include "../build/test_probe_a.h"
+#include "../build/test_probe_b.h"
 #include "../fs/elf.h"
 #include "../drivers/mouse.h"
 #include "../gfx/primitives.h"
@@ -242,7 +244,8 @@ int run_exec(const char *name)
             if (name[j] == 0) break;
         }
         if (match) {
-            task_t *t = task_create_user(g_run_registry[i].code_page, name[0], 0);
+            uint32_t pg = g_run_registry[i].code_page;
+            task_t *t = task_create_user_with_pages(pg, name[0], 0, &pg, 1);
             if (t) {
                 serial_write_string("Run: launched '");
                 serial_write_string((char *)name);
@@ -301,19 +304,31 @@ int exec_elf_from_path(const char *path)
         return -1;
     }
 
-    uint32_t entry = elf_load(buf, total);
+    uint32_t *pages;
+    uint32_t  page_count;
+    uint32_t entry = elf_load(buf, total, &pages, &page_count);
     if (entry == 0) {
         serial_write_string("exec: ELF load failed\n");
         return -1;
     }
 
-    uint32_t user_esp = elf_setup_user_stack(path);
+    uint32_t stack_page;
+    uint32_t user_esp = elf_setup_user_stack(path, &stack_page);
     if (user_esp == 0) {
         serial_write_string("exec: stack setup failed\n");
         return -1;
     }
 
-    task_t *t = task_create_user(entry, 'X', user_esp);
+    /* Build combined pages array: stack page + code pages */
+    uint32_t all_count = page_count + 1;
+    uint32_t all_pages[32];
+    all_pages[0] = stack_page;
+    for (uint32_t i = 0; i < page_count; i++)
+        all_pages[i + 1] = pages[i];
+
+    task_t *t = task_create_user_with_pages(entry, 'X', user_esp,
+                                             all_pages, all_count);
+    kfree(pages);
 
     if (!t) {
         serial_write_string("exec: task creation failed\n");
@@ -435,50 +450,50 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
     /* ── Phase 8b Step 2: ELF memory mapping ── */
     serial_write_string("\n=== Phase 8b Step 2: ELF load ===\n");
-    uint32_t elf_entry = elf_load(build_hello_elf_elf, build_hello_elf_elf_len);
+    uint32_t *elf_pages;
+    uint32_t  elf_page_count;
+    uint32_t elf_entry = elf_load(build_hello_elf_elf, build_hello_elf_elf_len,
+                                  &elf_pages, &elf_page_count);
     if (elf_entry == 0) {
         serial_write_string("ERROR: ELF load failed!\n");
     }
-    (void)elf_entry;   /* used in Step 4 for task_create_user */
 
     /* ── Phase 8b Step 3: user stack setup (argc/argv) ── */
     serial_write_string("\n=== Phase 8b Step 3: Stack setup ===\n");
-    uint32_t user_esp = elf_setup_user_stack("hello_elf");
+    uint32_t elf_stack_page;
+    uint32_t user_esp = elf_setup_user_stack("hello_elf", &elf_stack_page);
     if (user_esp == 0) {
         serial_write_string("ERROR: stack setup failed!\n");
     }
-    (void)user_esp;
 
     /* ── Phase 7: Shell + test program registry ── */
     serial_write_string("\n=== Phase 7: Shell ===\n");
 
     /* Register embedded test programs (before creating shell) */
-    uint32_t ramfs_test_page = pmm_alloc_page();
-    paging_set_user_accessible(ramfs_test_page);
+    uint32_t ramfs_test_page = pmm_alloc_user_page();
     copy_code(ramfs_test_page, build_test_ramfs_bin, build_test_ramfs_bin_len);
+    serial_write_string("ramfs_test: page ");
+    serial_write_hex(ramfs_test_page);
+    serial_write_string(" (user region)\n");
     run_register("ramfs_test", ramfs_test_page);
 
     /* ADR-004: bad-pointer test */
-    uint32_t bad_ptr_page = pmm_alloc_page();
-    paging_set_user_accessible(bad_ptr_page);
+    uint32_t bad_ptr_page = pmm_alloc_user_page();
     copy_code(bad_ptr_page, build_test_bad_ptr_bin, build_test_bad_ptr_bin_len);
     run_register("bad_ptr", bad_ptr_page);
 
     /* ADR-004: page-boundary string test */
-    uint32_t boundary_page = pmm_alloc_page();
-    paging_set_user_accessible(boundary_page);
+    uint32_t boundary_page = pmm_alloc_user_page();
     copy_code(boundary_page, build_test_boundary_bin, build_test_boundary_bin_len);
     run_register("boundary", boundary_page);
 
     /* ADR-003: NULL deref test (runs last — triggers #PF + halt) */
-    uint32_t null_page = pmm_alloc_page();
-    paging_set_user_accessible(null_page);
+    uint32_t null_page = pmm_alloc_user_page();
     copy_code(null_page, build_test_null_bin, build_test_null_bin_len);
     run_register("null_test", null_page);
 
     /* Shell user task */
-    uint32_t shell_page = pmm_alloc_page();
-    paging_set_user_accessible(shell_page);
+    uint32_t shell_page = pmm_alloc_user_page();
     copy_code(shell_page, build_shell_bin, build_shell_bin_len);
 
     serial_write_string("Shell: code page = ");
@@ -513,8 +528,17 @@ void kmain(unsigned int magic, void *multiboot_info) {
     serial_write_hex(user_esp);
     serial_write_string("\n");
 
-    /* Verify combined stack frame via serial before execution */
-    task_t *elf_task = task_create_user(elf_entry, 'E', user_esp);
+    /* Build combined pages array: stack page + code pages */
+    uint32_t elf_all_count = elf_page_count + 1;
+    uint32_t elf_all_pages[32];   /* 32 is generous for any realistic ELF */
+    elf_all_pages[0] = elf_stack_page;
+    for (uint32_t i = 0; i < elf_page_count; i++)
+        elf_all_pages[i + 1] = elf_pages[i];
+
+    task_t *elf_task = task_create_user_with_pages(elf_entry, 'E', user_esp,
+                                                    elf_all_pages, elf_all_count);
+    kfree(elf_pages);
+
     if (elf_task) {
         uint32_t *kst = (uint32_t *)(elf_task->esp);
         serial_write_string("ELF task kstack frame (10 dwords):\n");
@@ -538,7 +562,7 @@ void kmain(unsigned int magic, void *multiboot_info) {
         serial_write_string("\n");
     }
 
-    task_create_user(shell_page, 'S', 0);   /* 'S' = Shell */
+    task_create_user_with_pages(shell_page, 'S', 0, &shell_page, 1);
 
     /* ── Phase 11: Preemptive scheduling — register-verification tasks ──
      * Two tasks with distinct 6-register markers.  Each verifies its
@@ -546,20 +570,48 @@ void kmain(unsigned int magic, void *multiboot_info) {
      * If preemption corrupts a register, FAIL_A or FAIL_B prints. */
     serial_write_string("\n=== Phase 11: Regtest tasks ===\n");
     {
-        uint32_t rta_page = pmm_alloc_page();
-        paging_set_user_accessible(rta_page);
+        uint32_t rta_page = pmm_alloc_user_page();
         copy_code(rta_page, build_regtest_a_bin, build_regtest_a_bin_len);
-        task_t *rta = task_create_user(rta_page, 'a', 0);
-        serial_write_string("Regtest A: task ");
+        task_t *rta = task_create_user_with_pages(rta_page, 'a', 0, &rta_page, 1);
+        serial_write_string("Regtest A: page=");
+        serial_write_hex(rta_page);
+        serial_write_string(" (user region), task ");
         serial_write_hex(rta ? rta->id : 0);
         serial_write_string("\n");
 
-        uint32_t rtb_page = pmm_alloc_page();
-        paging_set_user_accessible(rtb_page);
+        uint32_t rtb_page = pmm_alloc_user_page();
         copy_code(rtb_page, build_regtest_b_bin, build_regtest_b_bin_len);
-        task_t *rtb = task_create_user(rtb_page, 'b', 0);
-        serial_write_string("Regtest B: task ");
+        task_t *rtb = task_create_user_with_pages(rtb_page, 'b', 0, &rtb_page, 1);
+        serial_write_string("Regtest B: page=");
+        serial_write_hex(rtb_page);
+        serial_write_string(" (user region), task ");
         serial_write_hex(rtb ? rtb->id : 0);
+        serial_write_string("\n");
+    }
+
+    /* ── Phase 12: Isolation verification (probe tasks) ──
+     * probe_a reads its own magic (0xAA), then attempts to read probe_b's
+     * magic at 0x0080E200.  probe_b's page is supervisor-only in probe_a's
+     * private PD → expected #PF (vector 0x0E, error code 0x05).
+     * probe_b must run first (self-test OK), so it's created LAST. */
+    serial_write_string("\n=== Phase 12: Isolation verification ===\n");
+    {
+        uint32_t pa_page = pmm_alloc_user_page();
+        copy_code(pa_page, build_test_probe_a_bin, build_test_probe_a_bin_len);
+        task_t *pa = task_create_user_with_pages(pa_page, 'A', 0, &pa_page, 1);
+        serial_write_string("Probe A: page=");
+        serial_write_hex(pa_page);
+        serial_write_string(" (user region), task ");
+        serial_write_hex(pa ? pa->id : 0);
+        serial_write_string("\n");
+
+        uint32_t pb_page = pmm_alloc_user_page();
+        copy_code(pb_page, build_test_probe_b_bin, build_test_probe_b_bin_len);
+        task_t *pb = task_create_user_with_pages(pb_page, 'B', 0, &pb_page, 1);
+        serial_write_string("Probe B: page=");
+        serial_write_hex(pb_page);
+        serial_write_string(" (user region), task ");
+        serial_write_hex(pb ? pb->id : 0);
         serial_write_string("\n");
     }
 

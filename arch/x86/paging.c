@@ -2,6 +2,7 @@
 #include "../../mm/pmm.h"
 #include "../../mm/multiboot.h"
 #include "../../drivers/serial.h"
+#include "../../sched/task.h"
 
 #define PDE_COUNT    1024
 #define PTE_COUNT    1024
@@ -141,13 +142,28 @@ void paging_map_phys_range(uint32_t phys_addr, uint32_t size)
     serial_write_string(" pages\n");
 }
 
-/* ── ADR-004 internal: check a single page's user accessibility ── */
+/* ── ADR-004 internal: check a single page's user accessibility ──
+ * Uses the current task's private PD when available (cr3 != 0),
+ * otherwise falls back to the kernel PD.  This is required because
+ * Phase-12 per-task isolation marks user pages only in private PDs.
+ *
+ * INVARIANT: task_current()->cr3 MUST equal the CPU's actual %cr3.
+ * This holds because the only callers are the copy_* family, which
+ * are only reached from syscall_dispatch (int 0x80).  At that point
+ * the task was placed on-CPU by task_yield(), which sets g_current
+ * BEFORE switch_to loads the task's cr3.  IRQ handlers do not call
+ * these functions, so an interrupt cannot desynchronise the two.
+ * If a future IRQ handler ever needs user-pointer validation, this
+ * invariant must be re-verified. */
 static int page_is_user_accessible(uint32_t vaddr)
 {
     uint32_t pd_index = vaddr >> 22;
     uint32_t pt_index = (vaddr >> 12) & 0x3FF;
 
-    pt_entry_t *pd = (pt_entry_t *)pd_phys;
+    task_t *cur = task_current();
+    uint32_t pd_phys_to_use = (cur && cur->cr3 != 0) ? cur->cr3 : pd_phys;
+
+    pt_entry_t *pd = (pt_entry_t *)pd_phys_to_use;
     if (!(pd[pd_index] & PAGE_P))
         return 0;
     if (!(pd[pd_index] & 0x4))   /* PDE.U/S */
@@ -282,4 +298,79 @@ void paging_set_user_accessible(uint32_t phys_addr)
     serial_write_string("Paging: user-accessible page ");
     serial_write_hex(phys_addr);
     serial_write_string("\n");
+}
+
+/* ── Phase 12: clone kernel page directory ── */
+
+uint32_t paging_clone_kernel_pd(void)
+{
+    uint32_t new_pd_phys = pmm_alloc_page();
+    if (!new_pd_phys) {
+        serial_write_string("Paging: ERROR — no memory for task PD\n");
+        return 0;
+    }
+
+    pt_entry_t *kernel_pd = (pt_entry_t *)pd_phys;
+    pt_entry_t *new_pd    = (pt_entry_t *)new_pd_phys;
+
+    /* Copy all 1024 PDEs — initially all PTs are shared with kernel */
+    for (int i = 0; i < PDE_COUNT; i++)
+        new_pd[i] = kernel_pd[i];
+
+    serial_write_string("Paging: cloned PD at phys=");
+    serial_write_hex(new_pd_phys);
+    serial_write_string("\n");
+
+    return new_pd_phys;
+}
+
+/* ── Phase 12: mark a page user-accessible in a specific task's PD ── */
+
+void paging_set_user_accessible_for_task(uint32_t task_pd_phys, uint32_t phys_addr)
+{
+    uint32_t pd_idx = phys_addr >> 22;
+    uint32_t pt_idx = (phys_addr >> 12) & 0x3FF;
+
+    pt_entry_t *task_pd   = (pt_entry_t *)task_pd_phys;
+    pt_entry_t *kernel_pd = (pt_entry_t *)pd_phys;
+
+    /* If the task's PDE still points to the shared kernel PT, clone it.
+     * After cloning, the task has a private PT — subsequent modifications
+     * won't affect other tasks, and kernel PT changes won't affect this task
+     * (which is correct: user-region PTs are never modified by the kernel). */
+    if ((task_pd[pd_idx] & ~0xFFF) == (kernel_pd[pd_idx] & ~0xFFF)) {
+        uint32_t new_pt_phys = pmm_alloc_page();
+        pt_entry_t *new_pt   = (pt_entry_t *)new_pt_phys;
+        pt_entry_t *shared_pt = (pt_entry_t *)(kernel_pd[pd_idx] & ~0xFFF);
+
+        for (int i = 0; i < PTE_COUNT; i++)
+            new_pt[i] = shared_pt[i];
+
+        /* Update task's PDE to point to the private PT, keeping flags */
+        task_pd[pd_idx] = new_pt_phys | PAGE_DEFAULT;
+
+        serial_write_string("Paging: cloned PT[");
+        serial_write_hex(pd_idx);
+        serial_write_string("] for task PD ");
+        serial_write_hex(task_pd_phys);
+        serial_write_string(" (new PT phys=");
+        serial_write_hex(new_pt_phys);
+        serial_write_string(")\n");
+    }
+
+    /* Mark user page in the (now private) PT + set PDE.U/S */
+    uint32_t pt_phys = task_pd[pd_idx] & ~0xFFF;
+    pt_entry_t *pt   = (pt_entry_t *)pt_phys;
+    pt[pt_idx] = phys_addr | PAGE_DEFAULT | 0x4;   /* P=1, R/W, U/S=1 */
+    task_pd[pd_idx] |= 0x4;                        /* PDE.U/S=1 */
+
+    serial_write_string("Paging: user page ");
+    serial_write_hex(phys_addr);
+    serial_write_string(" in task PD ");
+    serial_write_hex(task_pd_phys);
+    serial_write_string(" (PDE[");
+    serial_write_hex(pd_idx);
+    serial_write_string("].PTE[");
+    serial_write_hex(pt_idx);
+    serial_write_string("])\n");
 }

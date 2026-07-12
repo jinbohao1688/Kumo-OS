@@ -31,7 +31,18 @@ switch_to:
 
     ; ── Load next->esp → esp ──
     mov eax, [esp + 0x18]       ; eax = next (arg2)
-    mov esp, [eax]              ; esp = next->esp
+    mov esp, [eax]              ; esp = next->esp  (offset 0x00)
+
+    ; ── CR3 switch (Phase 12: per-task page directory) ──
+    ; Must happen AFTER stack switch (new stack is in shared kernel PTs)
+    ; and BEFORE pop (which reads callee-saved regs from the new stack).
+    ; eax still holds the 'next' pointer; use it to load next->cr3.
+    ; cr3 == 0 means idle or legacy task — skip the switch.
+    mov eax, [eax + 0x14]       ; eax = next->cr3
+    test eax, eax
+    jz .skip_cr3
+    mov cr3, eax
+.skip_cr3:
 
     ; ── Restore callee-saved registers (pop in forward order) ──
     pop ebx                     ; esp[0x00] → ebx

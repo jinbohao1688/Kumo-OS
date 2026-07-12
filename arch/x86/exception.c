@@ -1,5 +1,6 @@
 #include "isr.h"
 #include "../../drivers/serial.h"
+#include "../../sched/task.h"
 
 static const char *exception_names[32] = {
     "#DE Divide Error",
@@ -47,6 +48,23 @@ void isr_handler(registers_t *r)
     serial_write_string("  ErrCode: ");
     serial_write_hex(r->err_code);
     serial_write_string("\n");
+
+    /* Read CR2 (faulting linear address) */
+    uint32_t cr2_val;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2_val));
+    serial_write_string("  CR2:     ");
+    serial_write_hex(cr2_val);
+    serial_write_string("\n");
+
+    /* Identify which task triggered the fault */
+    task_t *cur = task_current();
+    if (cur) {
+        serial_write_string("  Task:    id=");
+        serial_write_hex(cur->id);
+        serial_write_string(" cr3=");
+        serial_write_hex(cur->cr3);
+        serial_write_string("\n");
+    }
 
     serial_write_string("  EIP:     ");
     serial_write_hex(r->eip);

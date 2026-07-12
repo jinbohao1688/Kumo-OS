@@ -5,6 +5,7 @@
 #include "../arch/x86/tss.h"
 #include "../drivers/serial.h"
 #include <stddef.h>
+#include <stdint.h>
 
 extern void return_to_ring3(void);
 
@@ -25,6 +26,7 @@ void task_init(void)
     idle->id               = 0;
     idle->state            = TASK_RUNNING;
     idle->kernel_stack_top = 0;   /* idle is a kernel task — no ring3 stack switch */
+    idle->cr3              = 0;   /* idle uses kernel PD */
     idle->next             = idle;
     for (int i = 0; i < MAX_FD_PER_TASK; i++)
         idle->fd_table[i] = NULL;
@@ -64,6 +66,7 @@ task_t *task_create(void (*entry)(void))
     t->esp    = (uint32_t)sp;
     t->id     = g_next_id++;
     t->state  = TASK_READY;
+    t->cr3    = 0;   /* kernel task — uses kernel PD */
     for (int i = 0; i < MAX_FD_PER_TASK; i++)
         t->fd_table[i] = NULL;
 
@@ -147,6 +150,7 @@ task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_es
     t->id               = g_next_id++;
     t->state            = TASK_READY;
     t->kernel_stack_top = kstack_top;
+    t->cr3              = 0;   /* legacy — uses kernel PD (migrated in Phase 12 step 2) */
     for (int i = 0; i < MAX_FD_PER_TASK; i++)
         t->fd_table[i] = NULL;
 
@@ -164,6 +168,100 @@ task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_es
     serial_write_hex(kstack_top);
     serial_write_string(" ustack_top=");
     serial_write_hex(ustack_top);
+    serial_write_string("\n");
+
+    return t;
+}
+
+/* ── Phase 12: task_create_user_with_pages ──
+ * Like task_create_user, but also:
+ *   1. Creates a private page directory (clone of kernel PD).
+ *   2. Marks user_pages[] as user-accessible in the private PD.
+ *   3. Optionally allocates a user stack (user_esp == 0) from user region.
+ *
+ * This is the single entry point where all per-task page marking converges. */
+
+task_t *task_create_user_with_pages(uint32_t entry_addr, uint32_t id_char,
+                                    uint32_t user_esp,
+                                    uint32_t *user_pages, uint32_t page_count)
+{
+    /* ── Kernel stack (2 pages, contiguous, kernel region) ── */
+    uint32_t kstack_base = pmm_alloc_contiguous_pages(2);
+    if (!kstack_base) {
+        serial_write_string("Task: ERROR — PMM out of memory for kernel stack\n");
+        return NULL;
+    }
+    uint32_t kstack_top = kstack_base + 2 * PAGE_SIZE;
+
+    /* ── Private page directory ── */
+    uint32_t task_pd = paging_clone_kernel_pd();
+    if (!task_pd) {
+        serial_write_string("Task: ERROR — failed to clone kernel PD\n");
+        return NULL;
+    }
+
+    /* ── User stack — only if caller didn't provide one ── */
+    uint32_t ustack_top;
+    uint32_t ustack_page = 0;
+
+    if (user_esp == 0) {
+        ustack_page = pmm_alloc_user_page();
+        if (!ustack_page) {
+            serial_write_string("Task: ERROR — PMM out of memory for user stack\n");
+            return NULL;
+        }
+        ustack_top = ustack_page + PAGE_SIZE;
+    } else {
+        ustack_top = user_esp;
+    }
+
+    /* ── Mark all user pages in the task's private PD ── */
+    for (uint32_t i = 0; i < page_count; i++)
+        paging_set_user_accessible_for_task(task_pd, user_pages[i]);
+    if (ustack_page)
+        paging_set_user_accessible_for_task(task_pd, ustack_page);
+
+    /* ── Build combined stack frame at kstack_top - 40 ── */
+    uint32_t *sp = (uint32_t *)(kstack_top - 40);
+    sp[0] = 0;
+    sp[1] = 0;
+    sp[2] = 0;
+    sp[3] = 0;
+    sp[4] = (uint32_t)&return_to_ring3;
+    sp[5] = entry_addr;
+    sp[6] = 0x1B;
+    sp[7] = 0x202;
+    sp[8] = ustack_top;
+    sp[9] = 0x23;
+
+    /* ── TCB ── */
+    task_t *t = (task_t *)kmalloc(sizeof(task_t));
+    t->esp              = (uint32_t)sp;
+    t->id               = g_next_id++;
+    t->state            = TASK_READY;
+    t->kernel_stack_top = kstack_top;
+    t->cr3              = task_pd;  /* private page directory */
+    for (int i = 0; i < MAX_FD_PER_TASK; i++)
+        t->fd_table[i] = NULL;
+
+    /* Insert after g_current in circular list */
+    t->next         = g_current->next;
+    g_current->next = t;
+
+    serial_write_string("Task: created user (iso) id=");
+    serial_write_hex(t->id);
+    serial_write_string(" id_char=");
+    serial_write_hex(id_char);
+    serial_write_string(" entry=");
+    serial_write_hex(entry_addr);
+    serial_write_string(" kstack_top=");
+    serial_write_hex(kstack_top);
+    serial_write_string(" ustack_top=");
+    serial_write_hex(ustack_top);
+    serial_write_string(" cr3=");
+    serial_write_hex(task_pd);
+    serial_write_string(" user_pages=");
+    serial_write_hex(page_count);
     serial_write_string("\n");
 
     return t;

@@ -22,7 +22,8 @@ typedef struct task {
     uint32_t state;            /* offset 0x08 */
     struct task *next;         /* offset 0x0C — circular linked list */
     uint32_t kernel_stack_top; /* offset 0x10 — top of 2-page kernel stack (for TSS.esp0) */
-    vfs_file_t *fd_table[MAX_FD_PER_TASK]; /* offset 0x14+ — per-task file descriptors */
+    uint32_t cr3;              /* offset 0x14 — page directory phys (0 = idle, use kernel PD) */
+    vfs_file_t *fd_table[MAX_FD_PER_TASK]; /* offset 0x18+ — per-task file descriptors */
 } task_t;
 
 /* ── Scheduler API ── */
@@ -30,6 +31,13 @@ typedef struct task {
 void    task_init(void);
 task_t *task_create(void (*entry)(void));
 task_t *task_create_user(uint32_t entry_addr, uint32_t id_char, uint32_t user_esp);
+
+/* Phase 12: create user task with private page directory.
+ * user_pages[] / page_count: physical addresses of user-code/data/stack
+ * pages to mark accessible in the task's private PD. */
+task_t *task_create_user_with_pages(uint32_t entry_addr, uint32_t id_char,
+                                    uint32_t user_esp,
+                                    uint32_t *user_pages, uint32_t page_count);
 void    task_yield(void);
 task_t *task_current(void);
 

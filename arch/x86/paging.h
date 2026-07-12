@@ -44,4 +44,19 @@ uint32_t copy_to_user(void *user_dst, const void *kernel_src, uint32_t size);
  * Returns 0 on success (NUL found within max_len), -1 on failure. */
 uint32_t copy_from_user_string(char *kbuf, const char *user_ptr, uint32_t max_len);
 
+/* ── Phase 12: per-task page directory isolation ── */
+
+/* Clone the kernel page directory.  All PDEs are copied (share kernel PTs).
+ * User pages are later marked via paging_set_user_accessible_for_task(),
+ * which clones individual PTs on demand.
+ * Returns the physical address of the new page directory, or 0 on failure. */
+uint32_t paging_clone_kernel_pd(void);
+
+/* Mark a physical page as user-accessible (U/S=1) in a specific task's PD.
+ * If the PDE covering phys_addr still points to a shared kernel PT,
+ * clones that PT first (allocates a private copy), then sets PTE.U/S=1
+ * and PDE.U/S=1 on the task-private entries.
+ * Must be called before the task runs for the first time (no invlpg needed). */
+void paging_set_user_accessible_for_task(uint32_t task_pd_phys, uint32_t phys_addr);
+
 #endif

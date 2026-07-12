@@ -1,6 +1,7 @@
 #include "elf.h"
 #include "../drivers/serial.h"
 #include "../mm/pmm.h"
+#include "../mm/kheap.h"
 #include "../arch/x86/paging.h"
 
 static const char *phdr_type_name(uint32_t type)
@@ -175,7 +176,8 @@ static void hexdump_line(uint32_t addr, const uint8_t *data, uint32_t len)
 }
 
 /* ── Step 2: load ELF segments into memory ── */
-uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size)
+uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size,
+                  uint32_t **out_pages, uint32_t *out_count)
 {
     (void)elf_size;
 
@@ -228,10 +230,10 @@ uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size)
     serial_write_hex(num_pages);
     serial_write_string(" pages\n");
 
-    /* ── Allocate contiguous physical pages ── */
-    uint32_t base_phys = pmm_alloc_contiguous_pages(num_pages);
+    /* ── Allocate contiguous pages from USER region ── */
+    uint32_t base_phys = pmm_alloc_contiguous_user_pages(num_pages);
     if (base_phys == 0) {
-        serial_write_string("ERROR: pmm_alloc_contiguous_pages failed\n");
+        serial_write_string("ERROR: pmm_alloc_contiguous_user_pages failed\n");
         return 0;
     }
 
@@ -240,14 +242,15 @@ uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size)
 
     serial_write_string("ELF: base_phys=");
     serial_write_hex(base_phys);
-    serial_write_string(" load_base=");
+    serial_write_string(" (user region) load_base=");
     serial_write_hex(load_base);
     serial_write_string("\n");
 
-    /* ── Mark all pages user-accessible ── */
-    for (uint32_t i = 0; i < num_pages; i++) {
-        paging_set_user_accessible(base_phys + i * 4096);
-    }
+    /* ── Build page list for caller (task_create_user_with_pages) ── */
+    *out_count = num_pages;
+    *out_pages = (uint32_t *)kmalloc(num_pages * sizeof(uint32_t));
+    for (uint32_t i = 0; i < num_pages; i++)
+        (*out_pages)[i] = base_phys + i * PAGE_SIZE;
 
     /* ── Pass 2: copy segment data + zero BSS ── */
     for (uint32_t i = 0; i < ehdr->e_phnum; i++) {
@@ -311,20 +314,20 @@ uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size)
  *   [NULL]               ← envp terminator (envp has 0 entries)
  *   [padding to 4-byte alignment]
  *   ["<prog_name>\0"]    ← ASCII string, placed first (highest in stack) */
-uint32_t elf_setup_user_stack(const char *prog_name)
+uint32_t elf_setup_user_stack(const char *prog_name, uint32_t *out_page)
 {
     /* ── Determine string length ── */
     uint32_t name_len = 0;
     while (prog_name[name_len]) name_len++;
     uint32_t name_bytes = name_len + 1;   /* include NUL terminator */
 
-    /* ── Allocate user stack page ── */
-    uint32_t ustack_page = pmm_alloc_page();
+    /* ── Allocate user stack page from USER region ── */
+    uint32_t ustack_page = pmm_alloc_user_page();
     if (ustack_page == 0) {
-        serial_write_string("ELF: ERROR pmm_alloc_page for user stack\n");
+        serial_write_string("ELF: ERROR pmm_alloc_user_page for user stack\n");
         return 0;
     }
-    paging_set_user_accessible(ustack_page);
+    *out_page = ustack_page;
 
     uint32_t sp = ustack_page + 4096;   /* top of page, stack grows down */
 
@@ -349,7 +352,7 @@ uint32_t elf_setup_user_stack(const char *prog_name)
     serial_write_string("\n=== User Stack Setup (Step 3) ===\n");
     serial_write_string("Stack page : ");
     serial_write_hex(ustack_page);
-    serial_write_string("\n");
+    serial_write_string(" (user region)\n");
     serial_write_string("Final ESP  : ");
     serial_write_hex(final_esp);
     serial_write_string("\n");

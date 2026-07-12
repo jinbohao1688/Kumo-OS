@@ -57,15 +57,23 @@ typedef struct {
 void elf_parse_and_print(const uint8_t *elf_data, uint32_t elf_size);
 
 /* ── Step 2: load ELF segments into memory ──
- * Allocates contiguous physical pages for all PT_LOAD segments,
- * sets user-accessible, copies segment data from file, zeros BSS.
- * Returns the absolute entry point (load_base + e_entry), or 0 on failure. */
-uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size);
+ * Allocates contiguous physical pages from the USER region for all PT_LOAD
+ * segments, copies segment data from file, zeros BSS.  Does NOT mark pages
+ * user-accessible — that responsibility moved to task_create_user_with_pages.
+ *
+ * Returns the absolute entry point (load_base + e_entry), or 0 on failure.
+ * On success, *out_pages is a kmalloc'd array of physical page addresses
+ * (caller must kfree), and *out_count is the number of pages. */
+uint32_t elf_load(const uint8_t *elf_data, uint32_t elf_size,
+                  uint32_t **out_pages, uint32_t *out_count);
 
 /* ── Step 3: build user stack with argc/argv ──
- * Allocates and populates a user stack page with:
+ * Allocates a user-region page and populates it with:
  *   [argc=1] [argv[0]=ptr_to_name] [NULL] [NULL] [name_string]
- * Returns the initial ESP value for the task, or 0 on failure. */
-uint32_t elf_setup_user_stack(const char *prog_name);
+ * Does NOT mark the page user-accessible (see elf_load note).
+ *
+ * Returns the initial ESP value for the task, or 0 on failure.
+ * On success, *out_page receives the physical address of the stack page. */
+uint32_t elf_setup_user_stack(const char *prog_name, uint32_t *out_page);
 
 #endif
