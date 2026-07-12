@@ -26,6 +26,7 @@
 #include "../drivers/mouse.h"
 #include "../gfx/primitives.h"
 #include "../gfx/font.h"
+#include "../wm/window.h"
 
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
@@ -417,6 +418,20 @@ void kmain(unsigned int magic, void *multiboot_info) {
         draw_string(50, 114, "0123456789 !@#$%^&*()[]{}<>", make_color(0xFF, 0x88, 0x00));
 
         serial_write_string("FB: Phase 10 drawing complete.\n");
+
+        /* ── Phase 13a: Single window rendering ── */
+        serial_write_string("\n=== Phase 13a: Window ===\n");
+        {
+            window_t win = {
+                .x = 30, .y = 140,
+                .w = 280, .h = 200,
+                .title = "Kumo Window",
+                .title_bar_color = make_color(0x30, 0x40, 0x60),
+                .body_color = make_color(0xD0, 0xD0, 0xD0),
+            };
+            window_draw(&win);
+            serial_write_string("WM: Window drawn.\n");
+        }
 
         /* ── Phase 11b: Mouse driver — init after FB is ready ── */
         serial_write_string("\n=== Phase 11b: Mouse ===\n");
