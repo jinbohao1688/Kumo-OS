@@ -526,3 +526,82 @@ kernel/
   main.c              — sti 移到 idle 循环之前, +Phase 11 regtest 任务注册和启动
 Makefile              — +regtest_a/regtest_b 编译规则
 ```
+
+## 阶段 11b：PS/2 鼠标驱动 ✓ (2026-07-12)
+
+### PS/2 控制器初始化流程
+
+- [x] Step 1: Enable auxiliary port（`outb(0x64, 0xA8)`）
+- [x] Step 2: Read-modify-write controller configuration byte
+  - 读 CFG（cmd 0x20）→ 置 bit1 (enable IRQ12) → 清 bit5 (enable mouse clock) → 写回（cmd 0x60）
+- [x] Step 3: Wire IDT[44] (IRQ12) → `irq12_entry`
+- [x] Step 4: Set Defaults（cmd 0xD4 → data 0xF6），验证 ACK=0xFA
+- [x] Step 5: Enable Data Reporting（cmd 0xD4 → data 0xF4），验证 ACK=0xFA
+- [x] Step 6: Set Stream Mode（cmd 0xD4 → data 0xEA），验证 ACK=0xFA
+- [x] Step 7: Unmask IRQ12（slave PIC bit 4）和 IRQ2（master bit 2）
+- [x] Step 8: 光标初始位置 = 屏幕中心，首次 cursor_draw()
+
+### IRQ12 中断处理
+
+- [x] `irq12_entry`（`arch/x86/irq.asm`）：pushad 规格，与 ISR/IRQ0 stub 完全一致
+  - push dummy error code 0 + vector 44 → jmp irq_common_stub
+  - irq_common_stub: pushad → call irq_handler → popad → add esp,8 → iret
+- [x] `irq_handler` 在 EOI 之前分发 vector 44 到 `mouse_handle_interrupt()`
+  - 注意：mouse_handle_interrupt 在 EOI **之前**调用（保证 ISR 状态一致）
+  - 抢占式调度仅在 IRQ0 路径触发，IRQ12 不触发 task_yield()
+- [x] IRQ1（键盘）屏蔽 + PIC ISR 清理
+  - QEMU 偶尔遗留 IRQ1 ISR 置位，阻塞低优先级中断（包括 IRQ2 slave cascade）
+  - 解决：irq_init 中发送 non-specific EOI 清零两个 PIC + 屏蔽 IRQ1
+
+### 3 字节包状态机
+
+- [x] PS/2 鼠标标准 3 字节包：byte0(flags) + byte1(dx) + byte2(dy)
+  - 3 次 IRQ12 中断拼出一个完整包，byte0 bit3 必须为 1（验证同步）
+- [x] `mouse_process_packet()`：
+  - 丢弃首个包（init 后 PS/2 缓冲区可能有残留 0xFA ACK，误食会永久偏移包边界）
+  - 前 5 个真实包串口 dump（flags/dx/dy hex，用于调试）
+  - 按钮状态变化上报（L/R/M 或 none）
+  - 移动事件 → cursor_restore() → 更新坐标（边界钳制）→ cursor_draw()
+
+### 光标 save/restore 显示
+
+- [x] `cursor_save()` — 读取光标区域 12×20 像素的背景，存入 `cursor_backup[]`
+  - 使用新增的 `get_pixel(x, y)` 读取帧缓冲（32/24/16bpp 三路径，与 put_pixel 对称）
+- [x] `cursor_draw()` — save → fill_rect 白色填充(11×19 内部) → draw_rect 黑色边框(12×20 外框) → 更新 cursor_old
+- [x] `cursor_restore()` — 将 `cursor_backup[]` 写回旧光标位置（12×20），恢复原始背景
+- [x] `mouse_drain_buf()` — sti 前清空 PS/2 输出缓冲区残留字节（最多 16 字节）
+
+### 颜色污染 bug
+
+- [x] **症状**：光标移动经过阶段 10 已绘制内容时，背景颜色被污染（对角线从青色变成绿色）
+  - 该 bug 在早期开发迭代中发现（截图证据确认），具体修复的代码差异因会话中断丢失了上下文
+  - 当前代码的 save/restore 机制逻辑上完整且对称（get_pixel ↔ put_pixel 对所有 bpp 路径一致），
+    未能精确定位到是当初哪一处具体改动解决了该问题
+- [x] **验证**：VNC 视觉验证通过——光标划过文字/矩形/青色对角线，背景完好无损，无颜色污染
+
+### 初始化顺序约束（踩坑）
+
+- [x] PS/2 初始化在 framebuffer 就绪之后（依赖 `g_framebuffer` 读取屏幕尺寸）
+- [x] `mouse_drain_buf()` 必须在 `sti` 之前调用
+  - 原因：Enable Data Reporting 后鼠标即开始发送数据，但 sti 前 IRQ12 无法触发 ISR，
+    数据堆积在 PS/2 输出缓冲区。如果不清空，sti 后第一条 IRQ12 会读到这些旧字节，
+    导致 3 字节包边界永久偏移
+
+### 阶段 11b 文件清单
+
+```
+drivers/
+  mouse.h           — mouse_init / mouse_handle_interrupt / mouse_drain_buf 声明
+  mouse.c           — PS/2 初始化 8 步流程 + 3 字节包状态机 + 光标 save/restore（300 行）
+arch/x86/
+  irq.asm           — +irq12_entry（pushad 规格）
+  irq_handler.c     — +IRQ12 分发 + IRQ1 屏蔽 + PIC ISR 清理 + inb/outb 辅助函数
+gfx/
+  primitives.h      — +get_pixel() 声明
+  primitives.c      — +get_pixel() 实现（32/24/16bpp 三路径，与 put_pixel 对称）
+kernel/
+  main.c            — +mouse_init() 调用（FB 就绪后）+ mouse_drain_buf() 调用（sti 前）
+Makefile            — +drivers/mouse.c 编译规则 + run-vnc/run-vnc-mon 目标
+```
+
+**阶段 11 完整收尾**：抢占式调度（11a）+ 鼠标驱动（11b）全部完成并 commit ✓
