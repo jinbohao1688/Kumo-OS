@@ -361,6 +361,7 @@ static window_t g_win_a, g_win_b, g_win_c;
 /* ── Phase 16: Window drag state ── */
 #define MIN_GRIP 30
 static window_t *g_drag_win = NULL;
+static int      g_drag_move_diag = 0;  /* movement diag counter, reset per drag */
 
 /* ── Phase 16: Mouse move callback — window drag ── */
 static void on_mouse_move(int32_t dx, int32_t dy)
@@ -370,9 +371,6 @@ static void on_mouse_move(int32_t dx, int32_t dy)
     g_drag_win->x += dx;
     g_drag_win->y -= dy;  /* PS/2 dy is inverted (up = positive) */
 
-    /* Clamp: left/top must be >= 0 (safety: draw_line negative-coord
-     * protection).  Right/bottom allow partial off-screen but keep
-     * MIN_GRIP px of title bar visible for re-grab. */
     int32_t max_x = (int32_t)g_framebuffer.width - MIN_GRIP;
     int32_t max_y = (int32_t)g_framebuffer.height - TITLE_BAR_H;
 
@@ -380,6 +378,17 @@ static void on_mouse_move(int32_t dx, int32_t dy)
     if (g_drag_win->x > max_x) g_drag_win->x = max_x;
     if (g_drag_win->y < 0)    g_drag_win->y = 0;
     if (g_drag_win->y > max_y) g_drag_win->y = max_y;
+
+    if (g_drag_move_diag < 8) {
+        serial_write_string("DRAG: move #");
+        serial_write_hex((uint32_t)g_drag_move_diag);
+        serial_write_string(" (");
+        serial_write_hex((uint32_t)g_drag_win->x);
+        serial_write_string(",");
+        serial_write_hex((uint32_t)g_drag_win->y);
+        serial_write_string(")\n");
+    }
+    g_drag_move_diag++;
 
     wm_draw_all();
 }
@@ -393,9 +402,29 @@ static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
         /* Mouse-down: title bar hit test for drag (topmost window first) */
         window_t *hit = wm_find_window_at(x, y);
         if (hit && window_hit_test_title_bar(hit, x, y)) {
+            g_drag_move_diag = 0;
+            serial_write_string("DRAG: start on '");
+            serial_write_string((char *)hit->title);
+            serial_write_string("' at (");
+            serial_write_hex((uint32_t)x);
+            serial_write_string(",");
+            serial_write_hex((uint32_t)y);
+            serial_write_string(")\n");
             wm_bring_to_top(hit);
             g_drag_win = hit;
             return;
+        }
+        /* Near-miss: click on window body but not title bar */
+        if (hit) {
+            serial_write_string("WM: body hit '");
+            serial_write_string((char *)hit->title);
+            serial_write_string("' at y=");
+            serial_write_hex((uint32_t)y);
+            serial_write_string(" (title bar is y=");
+            serial_write_hex((uint32_t)hit->y);
+            serial_write_string("..");
+            serial_write_hex((uint32_t)(hit->y + TITLE_BAR_H));
+            serial_write_string(")\n");
         }
         if (calc_handle_click(x, y, buttons))
             return;
@@ -403,6 +432,11 @@ static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
     } else {
         /* Mouse-up: end drag if active */
         if (g_drag_win) {
+            serial_write_string("DRAG: end at (");
+            serial_write_hex((uint32_t)g_drag_win->x);
+            serial_write_string(",");
+            serial_write_hex((uint32_t)g_drag_win->y);
+            serial_write_string(")\n");
             g_drag_win = NULL;
             return;
         }
