@@ -746,3 +746,57 @@ Makefile             — +wm/window.c 编译规则, +wm/window.h 依赖
 docs/
   decisions.md       — +决策-006 光标/窗口交互主动简化
 ```
+
+## 阶段 13b：输入路由（鼠标点击 → 窗口命中检测）✓ (2026-07-12)
+
+### 设计决策
+
+- **分层架构**：驱动层不知道 window_t 的存在。mouse 驱动通过回调函数指针
+  `g_mouse_click_callback` 上报原始事件 (x, y, buttons)；上层（main.c）注册
+  回调，在回调中做 window_hit_test() 判断命中
+- `mouse.h` 定义 `mouse_click_callback_t` 类型 + extern 函数指针
+- `mouse.c` 在 `mouse_process_packet()` 按钮状态变化时调用回调
+- `wm/window.h` 提供 `window_hit_test(win, x, y)` — 纯内联，矩形边界判断
+- `kernel/main.c` 实现 `on_mouse_click()` 回调 → hit test → 串口输出
+
+### 依赖方向
+
+```
+wm/window.h  ←  kernel/main.c (回调处理, hit test)
+                    ↓ 注册回调
+              drivers/mouse.c (不知道 window_t 的存在)
+```
+
+到阶段 13c（多窗口）时，只需在回调处理中遍历窗口列表按 Z 序做 hit test，
+mouse.c 无需任何改动。
+
+### 验证（5 点位自检）
+
+窗口边界：x=[30, 310), y=[140, 340)
+
+| # | 坐标 | 位置描述 | 结果 |
+|---|------|---------|------|
+| 1 | (160, 270) | 窗口主体内 | inside window |
+| 2 | (800, 500) | 远距离外 | outside window |
+| 3 | (35, 146) | 标题栏内 | inside window |
+| 4 | (29, 139) | 左上方紧邻外 | outside window |
+| 5 | (30, 140) | 左上角边界 ≥ | inside window |
+
+### QEMU PS/2 鼠标限制说明
+
+PS/2 鼠标协议天然是相对移动——QEMU VNC 的绝对坐标 / QEMU monitor 的
+`mouse_move` 命令均无法转换为 guest 内的 PS/2 相对运动（需要 USB tablet
+驱动支持，当前未实现）。因此实时鼠标点击验证通过 `sti` 前直接调用回调
+的自检方式完成，而非通过 VNC 模拟鼠标移动。
+
+### 文件清单
+
+```
+drivers/
+  mouse.h           — +mouse_click_callback_t 类型, +g_mouse_click_callback extern
+  mouse.c           — +g_mouse_click_callback 定义, 按钮变化时调用回调
+wm/
+  window.h          — +window_hit_test() 内联（边界判断）
+kernel/
+  main.c            — +on_mouse_click() 回调, +回调注册, +5点位自检
+```
