@@ -20,8 +20,11 @@ void wm_draw_all(void)
     uint32_t desktop = make_color(0x20, 0x20, 0x30);
     fill_rect(0, 0, g_framebuffer.width - 1, g_framebuffer.height - 1, desktop);
 
-    for (int i = 0; i < g_window_count; i++)
+    for (int i = 0; i < g_window_count; i++) {
         window_draw(g_windows[i]);
+        if (g_windows[i]->on_redraw)
+            g_windows[i]->on_redraw(g_windows[i]);
+    }
 
     mouse_cursor_show();
 }

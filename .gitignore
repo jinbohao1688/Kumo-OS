@@ -22,5 +22,8 @@ Thumbs.db
 # Serial log dumps (generated during QEMU testing)
 kumo_serial_log*.txt
 
+# Release artifacts (ISO binaries)
+release/
+
 # Claude local settings (contains per-machine paths/permissions)
 .claude/settings.local.json

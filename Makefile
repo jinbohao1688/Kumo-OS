@@ -5,7 +5,13 @@ CC          := $(CROSS_PREFIX)gcc
 LD          := $(CROSS_PREFIX)ld
 NASM        := nasm
 
-CFLAGS      := -m32 -ffreestanding -nostdlib -Wall -Wextra -g
+# DEV_BUILD=1 enables Phase 12 isolation verification (probe_a/probe_b tasks)
+# which deliberately halts the system.  Off by default for release builds.
+ifdef DEV_BUILD
+  CFLAGS  := -m32 -ffreestanding -nostdlib -Wall -Wextra -g -DKUMO_DEV_BUILD
+else
+  CFLAGS  := -m32 -ffreestanding -nostdlib -Wall -Wextra -g
+endif
 LDFLAGS     := -T linker.ld
 
 BUILD_DIR   := build

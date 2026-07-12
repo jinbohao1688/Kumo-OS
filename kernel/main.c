@@ -675,7 +675,13 @@ void kmain(unsigned int magic, void *multiboot_info) {
      * probe_a reads its own magic (0xAA), then attempts to read probe_b's
      * magic at 0x0080E200.  probe_b's page is supervisor-only in probe_a's
      * private PD → expected #PF (vector 0x0E, error code 0x05).
-     * probe_b must run first (self-test OK), so it's created LAST. */
+     *
+     * This is a DEVELOPMENT verification tool — it deliberately halts the
+     * system to prove isolation works at the hardware level.  It is NOT
+     * included in the default (release) build.  Enable with:
+     *   make DEV_BUILD=1
+     * or add -DKUMO_DEV_BUILD to CFLAGS. */
+#ifdef KUMO_DEV_BUILD
     serial_write_string("\n=== Phase 12: Isolation verification ===\n");
     {
         uint32_t pa_page = pmm_alloc_user_page();
@@ -696,6 +702,7 @@ void kmain(unsigned int magic, void *multiboot_info) {
         serial_write_hex(pb ? pb->id : 0);
         serial_write_string("\n");
     }
+#endif
 
     /* Drain any PS/2 mouse bytes that arrived after mouse_init.
      * The mouse starts streaming after Enable Reporting and may have

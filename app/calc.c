@@ -174,6 +174,7 @@ void calc_init(void)
     g_calc_win.title = "Calculator";
     g_calc_win.title_bar_color = make_color(0x30, 0x40, 0x60);
     g_calc_win.body_color       = make_color(0xE0, 0xE0, 0xE0);
+    g_calc_win.on_redraw        = calc_redraw;
 
     wm_add_window(&g_calc_win);
 
@@ -212,6 +213,15 @@ void calc_init(void)
     serial_write_string("Calc: init done, ");
     serial_write_hex((uint32_t)g_btn_count);
     serial_write_string(" buttons\n");
+}
+
+void calc_redraw(struct window *win)
+{
+    (void)win;  /* we know it's &g_calc_win */
+    window_draw(&g_calc_win);
+    for (int i = 0; i < g_btn_count; i++)
+        button_draw(&g_btns[i], &g_calc_win, 0);
+    calc_refresh_display();
 }
 
 int calc_handle_click(int32_t x, int32_t y, uint8_t buttons)
