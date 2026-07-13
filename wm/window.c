@@ -13,7 +13,8 @@ void window_draw(const window_t *win)
     fill_rect((uint32_t)(win->x + 1), (uint32_t)(win->y + 1),
               win->w - 2, TITLE_BAR_H, win->title_bar_color);
 
-    draw_string((uint32_t)(win->x + 4), (uint32_t)(win->y + 2),
+    draw_string((uint32_t)(win->x + 4),
+                (uint32_t)(win->y + 1 + (TITLE_BAR_H - FONT_HEIGHT) / 2),
                 win->title, title_text_color);
 
     uint32_t body_y = (uint32_t)(win->y + TITLE_BAR_H + 1);

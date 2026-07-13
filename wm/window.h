@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define TITLE_BAR_H 20
+#define TITLE_BAR_H 26
 
 typedef struct window {
     int32_t  x, y;

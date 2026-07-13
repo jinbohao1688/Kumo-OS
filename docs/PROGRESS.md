@@ -992,3 +992,53 @@ kernel/
   main.c            — 两阶段路由接入 calc_handle_click (替换 Phase 14 demo 按钮)
 Makefile            — +app/calc.c 编译规则, +app/calc.h 依赖
 ```
+## 阶段 16：窗口拖动 ✓ (2026-07-12)
+
+### 前置修复：draw_line 负坐标死循环 (30c74b1)
+
+- [x] Bresenham 循环变量 uint32_t→int32_t，修复负坐标输入时变量回绕导致死循环
+  - 死循环发生在 IRQ 上下文（IF=0），系统静默硬锁定，无任何输出
+- [x] 增加 framebuffer 边界检查作为纵深防御
+
+### 拖动功能实现 (aaf4feb)
+
+- [x] 拖动状态机：IDLE → 标题栏按下 → DRAGGING → 释放 → IDLE
+- [x] `window_hit_test_title_bar()` — 标题栏命中判定（仅标题栏区域触发拖动）
+- [x] `wm_find_window_at()` / `wm_bring_to_top()` — top→bottom 查找 + 拖动开始时自动置顶
+- [x] `g_mouse_move_callback` — 每个 PS/2 运动包触发回调，驱动流畅拖动
+- [x] 坐标钳制：x∈[0, width-MIN_GRIP], y∈[0, height-TITLE_BAR_H]，MIN_GRIP=30px
+  - 保证窗口拖到屏幕边缘后仍有 30px 标题栏可重新抓取
+- [x] 两项目检：(1) 模拟拖动偏移验证；(2) 投毒负坐标验证 wm_draw_all() 不挂
+
+### 标题栏尺寸修复
+
+- [x] 自检 PASS 但用户 VNC 操作无法拖动的根因：TITLE_BAR_H=20px 过窄
+  - 自检代码用精确坐标命中 20px 标题栏，真人鼠标难以复现
+- [x] 结构性修复：TITLE_BAR_H 20→26px，文字垂直居中（`(TITLE_BAR_H-FONT_HEIGHT)/2`）
+  - 5 处依赖（hit test / 标题栏填充 / body 起始 / 拖动钳制 / 诊断消息）全部通过
+    TITLE_BAR_H 宏自动同步，无需多点排查
+- [x] near-miss 诊断消息保留，出现频率因标题栏加高而显著降低
+- [x] VNC 人工验证：凭直觉点击即可命中，非"学会适应窄标题栏"
+
+### GUI 路线图里程碑（补充阶段 16）
+
+| 阶段 | 内容 | 核心交付 |
+|------|------|---------|
+| 16 | 窗口拖动 | 标题栏拖动 + move callback + TITLE_BAR_H 结构化定义 |
+
+### 文件清单
+
+```
+wm/
+  window.h           — +TITLE_BAR_H=26, +window_hit_test_title_bar()
+  window.c           — 标题文字垂直居中公式
+  wm.h               — +wm_find_window_at(), +wm_bring_to_top()
+  wm.c               — +wm_find_window_at(), +wm_bring_to_top()
+drivers/
+  mouse.h            — +mouse_move_callback_t, +g_mouse_move_callback
+  mouse.c            — +移动回调调用（每个运动包触发）
+gfx/
+  primitives.c       — Bresenham 循环变量 uint32_t→int32_t, +边界检查
+kernel/
+  main.c             — +拖动状态机, +on_mouse_move(), +坐标钳制, +诊断输出
+```
