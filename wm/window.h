@@ -31,4 +31,16 @@ static inline int window_hit_test_title_bar(const window_t *win, int32_t x, int3
             y >= win->y && y < (int32_t)(win->y + TITLE_BAR_H));
 }
 
+/* Phase 17: close button — top-right corner of title bar */
+#define CLOSE_BTN_SIZE  18
+#define CLOSE_BTN_MARGIN 4
+
+static inline int window_hit_test_close_button(const window_t *win, int32_t x, int32_t y)
+{
+    int32_t bx = win->x + (int32_t)win->w - CLOSE_BTN_SIZE - CLOSE_BTN_MARGIN;
+    int32_t by = win->y + CLOSE_BTN_MARGIN;
+    return (x >= bx && x < bx + CLOSE_BTN_SIZE &&
+            y >= by && y < by + CLOSE_BTN_SIZE);
+}
+
 #endif

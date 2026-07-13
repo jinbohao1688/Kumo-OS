@@ -94,3 +94,23 @@ void wm_bring_to_top(window_t *win)
 
     wm_draw_all();
 }
+
+void wm_remove_window(window_t *win)
+{
+    int idx = -1;
+    for (int i = 0; i < g_window_count; i++) {
+        if (g_windows[i] == win) { idx = i; break; }
+    }
+    if (idx < 0) return;
+
+    serial_write_string("WM: removing '");
+    serial_write_string((char *)win->title);
+    serial_write_string("'\n");
+
+    for (int j = idx; j < g_window_count - 1; j++)
+        g_windows[j] = g_windows[j + 1];
+    g_windows[g_window_count - 1] = NULL;
+    g_window_count--;
+
+    wm_draw_all();
+}

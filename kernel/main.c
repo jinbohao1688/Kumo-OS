@@ -399,8 +399,17 @@ static void on_mouse_move(int32_t dx, int32_t dy)
 static void on_mouse_click(int32_t x, int32_t y, uint8_t buttons)
 {
     if (buttons & 1) {
-        /* Mouse-down: title bar hit test for drag (topmost window first) */
+        /* Phase 17: close-button check (priority 1 — before drag) */
         window_t *hit = wm_find_window_at(x, y);
+        if (hit && window_hit_test_close_button(hit, x, y)) {
+            serial_write_string("WM: close button on '");
+            serial_write_string((char *)hit->title);
+            serial_write_string("'\n");
+            if (g_drag_win == hit) g_drag_win = NULL;
+            wm_remove_window(hit);
+            return;
+        }
+        /* Mouse-down: title bar hit test for drag (priority 2) */
         if (hit && window_hit_test_title_bar(hit, x, y)) {
             g_drag_move_diag = 0;
             serial_write_string("DRAG: start on '");
@@ -550,6 +559,7 @@ void kmain(unsigned int magic, void *multiboot_info) {
         /* Phase 16: register move callback → window drag */
         g_mouse_move_callback = on_mouse_move;
 
+#ifdef KUMO_DEV_BUILD
         /* ── Phase 15: Calculator self-check — 5 + 3 = 8 ──
          * Calculator window at (500,40), 240×280.
          * Button absolute centers:
@@ -649,6 +659,48 @@ void kmain(unsigned int magic, void *multiboot_info) {
         wm_draw_all();
 
         serial_write_string("Phase 16: draw_line safety check PASS.\n");
+
+        /* ── Phase 17: Close button self-check ──
+         * After Phase 16 drag: Demo A at (150,140), Demo B at (160,120),
+         * Demo C at (270,180), Calc at (500,40).  Z-order: A, B, C, Calc. */
+        serial_write_string("\nPhase 17: Close button self-check...\n");
+
+        /* Test 1: Close Demo B (middle window).
+         * Close btn center = (160+220-13, 120+13) = (367, 133) */
+        serial_write_string("  [1] Close Demo B:\n");
+        on_mouse_click(367, 133, 1);
+        /* Expected: "WM: close button on 'Demo B'" + "WM: removing 'Demo B'" */
+
+        /* Test 2: Click Demo B's old unique region (x=300,y=133).
+         * After removal, no window covers this point → "no window hit". */
+        serial_write_string("  [2] Click where Demo B was (should miss):\n");
+        on_mouse_click(300, 133, 1);
+
+        /* Test 3: Close a different window while dragging.
+         * Click Demo A left-edge title bar (x=155 unique-to-A, avoids Demo B overlap).
+         * Close Demo C (close center = (477, 193)), then continue and release drag. */
+        serial_write_string("  [3] Drag A + close C (different window):\n");
+        on_mouse_click(155, 153, 1);  /* drag start on A (unique region) */
+        on_mouse_move(10, 0);
+        on_mouse_click(477, 193, 1);  /* close C (should succeed, A still dragged) */
+        on_mouse_move(15, -10);
+        on_mouse_click(200, 163, 0);  /* release A (drag complete) */
+
+        /* Test 4: Close the window being dragged (self-close).
+         * Use live g_win_a coordinates — it moved during test 3 drag. */
+        serial_write_string("  [4] Close dragged window itself (Demo A):\n");
+        {
+            int32_t ax = g_win_a.x + (int32_t)g_win_a.w / 2;
+            int32_t ay = g_win_a.y + 13;
+            int32_t cx = g_win_a.x + (int32_t)g_win_a.w - 13;
+            int32_t cy = g_win_a.y + 13;
+            on_mouse_click(ax, ay, 1);   /* drag start */
+            on_mouse_click(cx, cy, 1);   /* close self → g_drag_win cleared */
+            on_mouse_click(ax, ay, 0);   /* mouse-up (no drag-end, g_drag_win NULL) */
+        }
+
+        serial_write_string("Phase 17: close-button self-check done.\n");
+#endif /* KUMO_DEV_BUILD */
     } else {
         serial_write_string("FB: no framebuffer — GRUB did not provide one.\n");
     }
