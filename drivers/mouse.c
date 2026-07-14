@@ -162,7 +162,6 @@ static void mouse_process_packet(void)
             g_mouse_click_callback(cursor_x, cursor_y, buttons);
     }
 
-    /* ── Movement ── */
     if (dx != 0 || dy != 0) {
         cursor_restore();
 

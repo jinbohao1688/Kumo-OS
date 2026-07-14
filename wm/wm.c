@@ -8,6 +8,13 @@
 static window_t *g_windows[MAX_WINDOWS];
 static int       g_window_count;
 
+/* ── Phase 18 step 1: Damage tracking state (drag only) ── */
+static struct {
+    int32_t  x, y;
+    uint32_t w, h;
+    int      valid;
+} g_dirty;
+
 void wm_add_window(window_t *win)
 {
     if (g_window_count >= MAX_WINDOWS) return;
@@ -113,4 +120,105 @@ void wm_remove_window(window_t *win)
     g_window_count--;
 
     wm_draw_all();
+}
+
+/* ── Phase 18 step 1: Dirty rectangle tracking ── */
+
+void wm_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h)
+{
+    if (w == 0 || h == 0) return;
+
+    /* Clamp to framebuffer bounds */
+    if (x < 0) {
+        uint32_t adj = (uint32_t)(-x);
+        if (adj >= w) return;
+        w -= adj; x = 0;
+    }
+    if (y < 0) {
+        uint32_t adj = (uint32_t)(-y);
+        if (adj >= h) return;
+        h -= adj; y = 0;
+    }
+    if ((uint32_t)x >= g_framebuffer.width || (uint32_t)y >= g_framebuffer.height) return;
+    if ((uint32_t)x + w > g_framebuffer.width)  w = g_framebuffer.width  - (uint32_t)x;
+    if ((uint32_t)y + h > g_framebuffer.height) h = g_framebuffer.height - (uint32_t)y;
+    if (w == 0 || h == 0) return;
+
+    if (!g_dirty.valid) {
+        g_dirty.x = x; g_dirty.y = y;
+        g_dirty.w = w; g_dirty.h = h;
+        g_dirty.valid = 1;
+        return;
+    }
+
+    /* Expand bounding rectangle */
+    int32_t dr = g_dirty.x + (int32_t)g_dirty.w;
+    int32_t db = g_dirty.y + (int32_t)g_dirty.h;
+    int32_t nr = x + (int32_t)w;
+    int32_t nb = y + (int32_t)h;
+
+    if (x < g_dirty.x) g_dirty.x = x;
+    if (y < g_dirty.y) g_dirty.y = y;
+    if (nr > dr) dr = nr;
+    if (nb > db) db = nb;
+
+    g_dirty.w = (uint32_t)(dr - g_dirty.x);
+    g_dirty.h = (uint32_t)(db - g_dirty.y);
+}
+
+int wm_has_dirty(void)
+{
+    return g_dirty.valid;
+}
+
+void wm_flush_dirty(void)
+{
+    /* Snapshot-and-clear: atomically take ownership so IRQ12 mark_dirty
+     * writes to a fresh g_dirty while we work from the local snapshot. */
+    struct { int32_t x, y; uint32_t w, h; int valid; } snap;
+    int had_dirty;
+
+    __asm__ volatile("cli");
+    had_dirty = g_dirty.valid;
+    if (had_dirty) {
+        snap.x = g_dirty.x;
+        snap.y = g_dirty.y;
+        snap.w = g_dirty.w;
+        snap.h = g_dirty.h;
+        snap.valid = 1;
+        g_dirty.valid = 0;
+    }
+    __asm__ volatile("sti");
+
+    if (!had_dirty) return;
+
+    /* The flush sequence runs under cli so IRQ12 cursor restore/draw
+     * cannot interleave with cursor hide/show + framebuffer writes.
+     *
+     * cli duration = fill_rect(dirty) + sum of window_draw(intersecting).
+     * Typical drag: 200K-400K px -> 20-40 ms.
+     * Corner-to-corner drag: ~786K px -> ~100-150 ms.
+     * If freezes reproduce on extreme drags, split fill_rect into
+     * horizontal strips with per-strip cli/sti. */
+    __asm__ volatile("cli");
+    mouse_cursor_hide();
+
+    uint32_t desktop = make_color(0x20, 0x20, 0x30);
+    fill_rect((uint32_t)snap.x, (uint32_t)snap.y, snap.w, snap.h, desktop);
+
+    for (int i = 0; i < g_window_count; i++) {
+        window_t *w = g_windows[i];
+        int32_t wr = w->x + (int32_t)w->w;
+        int32_t wb = w->y + (int32_t)w->h;
+        int32_t dr = snap.x + (int32_t)snap.w;
+        int32_t db = snap.y + (int32_t)snap.h;
+
+        if (!(w->x >= dr || wr <= snap.x || w->y >= db || wb <= snap.y)) {
+            window_draw(w);
+            if (w->on_redraw) w->on_redraw(w);
+        }
+    }
+
+    mouse_cursor_show();
+    __asm__ volatile("sti");
 }

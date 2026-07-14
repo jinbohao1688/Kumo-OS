@@ -72,6 +72,14 @@ docs/       设计文档、阶段笔记（PROGRESS.md、decisions.md、phase-not
 
 ---
 
+## 构建类型与用途（Decision-010）
+
+- **`make`（release/默认）**：不含 `KUMO_DEV_BUILD`。用于 **VNC 人工交互测试**，系统不会自动 HALT。
+- **`make DEV_BUILD=1`**：含 `KUMO_DEV_BUILD`。**仅用于非交互式自动化验证**（串口自检 + `-d int` 异常日志）。
+- **两种构建不可混用**。交给用户做 VNC 交互测试的 ISO 必须用默认构建，否则 Phase 12 的 probe_a/b 会故意 HALT，被误判为功能性 freeze。
+
+---
+
 ## 每次改动的标准工作流
 
 1. 明确当前请求属于哪个阶段的哪个模块，对照 `docs/PROGRESS.md` 确认前置条件已满足。

@@ -368,6 +368,9 @@ static void on_mouse_move(int32_t dx, int32_t dy)
 {
     if (!g_drag_win) return;
 
+    int32_t old_x = g_drag_win->x;
+    int32_t old_y = g_drag_win->y;
+
     g_drag_win->x += dx;
     g_drag_win->y -= dy;  /* PS/2 dy is inverted (up = positive) */
 
@@ -390,7 +393,8 @@ static void on_mouse_move(int32_t dx, int32_t dy)
     }
     g_drag_move_diag++;
 
-    wm_draw_all();
+    wm_mark_dirty(old_x, old_y, g_drag_win->w, g_drag_win->h);
+    wm_mark_dirty(g_drag_win->x, g_drag_win->y, g_drag_win->w, g_drag_win->h);
 }
 
 /* ── Phase 15: Two-phase click routing ──
@@ -522,6 +526,17 @@ void kmain(unsigned int magic, void *multiboot_info) {
 
         serial_write_string("FB: Phase 10 drawing complete.\n");
 
+        /* ── Phase 11b: Mouse driver — must init before first wm_draw_all()
+         * so that cursor_x/y are set to screen centre, avoiding a ghost
+         * cursor at (0,0) from uninitialised .bss coordinates. */
+        serial_write_string("\n=== Phase 11b: Mouse ===\n");
+        mouse_init();
+
+        /* Phase 15: register click callback → calc + wm */
+        g_mouse_click_callback = on_mouse_click;
+        /* Phase 16: register move callback → window drag */
+        g_mouse_move_callback = on_mouse_move;
+
         /* ── Phase 13c: Multi-window with Z-ordering ── */
         serial_write_string("\n=== Phase 13c: Window Manager ===\n");
 
@@ -549,15 +564,6 @@ void kmain(unsigned int magic, void *multiboot_info) {
         /* ── Phase 15: Calculator app ── */
         serial_write_string("\n=== Phase 15: Calculator ===\n");
         calc_init();
-
-        /* ── Phase 11b: Mouse driver — init after FB is ready ── */
-        serial_write_string("\n=== Phase 11b: Mouse ===\n");
-        mouse_init();
-
-        /* Phase 15: register click callback → calc + wm */
-        g_mouse_click_callback = on_mouse_click;
-        /* Phase 16: register move callback → window drag */
-        g_mouse_move_callback = on_mouse_move;
 
 #ifdef KUMO_DEV_BUILD
         /* ── Phase 15: Calculator self-check — 5 + 3 = 8 ──
@@ -911,6 +917,8 @@ void kmain(unsigned int magic, void *multiboot_info) {
     serial_write_string("Shell: enabling interrupts (sti) + entering idle/scheduler loop...\n");
     __asm__ volatile("sti");
     for (;;) {
+        if (wm_has_dirty())
+            wm_flush_dirty();
         task_yield();
     }
 }
