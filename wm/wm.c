@@ -122,6 +122,14 @@ void wm_remove_window(window_t *win)
     wm_draw_all();
 }
 
+int wm_is_window_active(window_t *win)
+{
+    for (int i = 0; i < g_window_count; i++) {
+        if (g_windows[i] == win) return 1;
+    }
+    return 0;
+}
+
 /* ── Phase 18 step 1: Dirty rectangle tracking ── */
 
 void wm_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h)
@@ -222,3 +230,4 @@ void wm_flush_dirty(void)
     mouse_cursor_show();
     __asm__ volatile("sti");
 }
+

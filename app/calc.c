@@ -226,6 +226,13 @@ void calc_redraw(struct window *win)
 
 int calc_handle_click(int32_t x, int32_t y, uint8_t buttons)
 {
+    /* Do not respond to clicks if the calculator window has been
+     * removed from the WM — g_calc_win still exists in memory
+     * but is no longer in g_windows[], so any drawing we do
+     * would produce ghost buttons on an otherwise-empty screen. */
+    if (!wm_is_window_active(&g_calc_win))
+        return 0;
+
     if (buttons & 1) {
         /* Mouse-down: hit test all buttons */
         for (int i = 0; i < g_btn_count; i++) {

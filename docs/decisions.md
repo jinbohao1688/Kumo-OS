@@ -486,3 +486,92 @@ idle loop (IF=1):
   备选方案（3 行兜底）
 - Decision-009：自检代码的 KUMO_DEV_BUILD gate 规则
 - Decision-010：DEV_BUILD 和默认构建不可混用于 VNC 测试
+- Decision-012：阶段 18 条纹残影的完整排查过程与"共享错误输入的交叉验证失效"
+  方法论教训
+
+## Decision-012: 阶段 18 条纹残影排查 —— 共享错误输入的交叉验证失效
+
+**日期**：2026-07-15
+
+**状态**：已解决
+
+### 问题
+
+窗口拖动时出现条纹状残影（striped artifacts），但 DIAG 独立 AABB 累加器的
+交叉验证从未报告过 COVERAGE GAP——每次 `expected` 和 `actual` 完全一致。
+
+### 排查过程
+
+1. **第一轮诊断代码**：在 `main.c` 中添加独立 AABB 累加器 `g_cycle_expected`，
+   在空闲循环中与 `wm_get_last_snap()` 的返回值做交叉验证。产生大量 COVERAGE GAP
+   误报，全部分为两类：
+   - **类型 1**：累加器未做帧缓冲边界裁剪，expected 底部超出屏幕 2-4 像素
+   - **类型 2**：竞态条件——`g_cycle_expected` 在空闲循环中快照，`g_dirty` 在
+     `wm_flush_dirty()` 中快照，不在同一个 `cli` 窗口下，IRQ12 可能在两者之间
+     插入并向累加器追加新矩形
+
+2. **第二轮诊断代码**：将 `g_cycle_expected` 移入 `wm.c`，与 `g_dirty` 在同一个
+   `cli` 块中原子快照。同时为累加器添加与 `wm_mark_dirty` 完全一致的帧缓冲裁剪。
+   两种误报全部消除。用户用 VNC 进行真实抖动拖拽测试——预期与实际完全一致，
+   一次 COVERAGE GAP 都没有。
+
+3. **方向转换**：DIAG 证明了 dirty rect 的 AABB 合并逻辑本身**完全正确**。
+   残影依然存在 → 根因不在"该重绘的区域算错了"，而在"该重绘的区域没有被真正
+   清干净"。排查方向从 dirty rect 计算逻辑转移到 fill_rect/window_draw 的绘制
+   执行本身。
+
+### 根因
+
+**`draw_rect`（边框绘制）与 `fill_rect`（填充）之间的 1 像素语义不一致。**
+
+- `draw_rect(x, y, w, h)` 使用 Bresenham 直线绘制边框，直线的两端点都包含。
+  右侧边框覆盖 `x = x+w`，底部边框覆盖 `y = y+h`。整个窗口（含边框）实际占据
+  **(w+1) × (h+1)** 像素。
+
+- `fill_rect(x, y, w, h)` 的语义是 **[x, x+w) × [y, y+h)**（半开区间），
+  右/下边界不包含。
+
+- `wm_mark_dirty(x, y, w, h)` 使用 `w` 和 `h` 作为宽度/高度，
+  `fill_rect` 因此只填充 w×h 像素，仅覆盖 `[x, x+w) × [y, y+h)`。
+
+窗口拖动时，`on_mouse_move()` 标记旧位置和新位置的脏矩形都使用 `win->w, win->h`。
+`fill_rect` 清除旧位置的桌面背景色时，只清除了 **[old_x, old_x+w) × [old_y, old_y+h)**，
+漏掉了旧窗口右侧边框列 `x = old_x+w` 和底部边框行 `y = old_y+h`，恰好各 1 像素宽。
+窗口移走后，这些 1 像素边框残留形成条纹残影。
+
+### 修复
+
+`on_mouse_move()` 中 `wm_mark_dirty()` 使用 `w+1, h+1`（`main.c:423-428`）。
+
+### 方法论教训：共享错误输入的交叉验证失效
+
+这是整个阶段 18 中最有价值的收获，**比 bug 本身更重要**。
+
+DIAG 的诊断架构是：
+1. 独立 AABB 累加器（`g_cycle`）在 IRQ12 上下文中接收与 `g_dirty` 相同的
+   `wm_mark_cycle()` / `wm_mark_dirty()` 调用
+2. 空闲循环中比较两者的快照，检测是否一致
+
+**但如果两个累加器共享同一个错误的输入源，它们的输出会"一致地错误"。**
+
+在这个案例中：
+- `wm_mark_dirty(old_x, old_y, win->w, win->h)` — 使用 `win->w`，少算了 1 像素
+- `wm_mark_cycle(old_x, old_y, win->w, win->h)` — 同样使用 `win->w`，同样少算 1 像素
+- Expected 和 actual 在数学上永远一致，交叉验证根本不可能发现这个错误
+
+**这不是诊断代码设计得不好——这类 bug 对交叉验证是免疫的。** 当两套"独立"
+计算都从一个共享的、但恰好错误的输入源获取数据时，任何基于两者比较的验证机制
+都会失效。能发现这个 bug 的唯一途径是换一个**完全不同的视角**——从"两个累加器
+彼此是否一致"（dirty rect vs cycle accumulator）切换到"累加器覆盖的范围与实际
+像素绘制操作覆盖的范围是否一致"（dirty rect vs draw_rect 实际覆盖范围）。
+
+**推广到一般情况**：任何交叉验证系统的设计者都应该问自己——
+**"被验证方和验证方之间，有没有共享任何假设、输入源或计算逻辑？"**
+如果有，这些共享点就是验证的盲区。交叉验证只能检测两套计算**在它们不同的部分**
+是否产生分歧——而它们共享的部分，无论对错，都会被验证系统视为"正常"。
+
+### 相关文件
+
+- `wm/wm.c`：`wm_mark_dirty()`（脏矩形标记）、`wm_flush_dirty()`（闲置循环重绘）
+- `gfx/primitives.c`：`fill_rect()`（[x,x+w) 半开区间）、`draw_rect()`（含两端点边框）
+- `kernel/main.c`：`on_mouse_move()`（拖动时标记脏矩形的调用点）

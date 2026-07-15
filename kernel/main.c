@@ -31,6 +31,13 @@
 #include "../wm/wm.h"
 #include "../app/calc.h"
 
+/*
+ * FUTURE REFACTOR (Decision-009, 3rd recurrence): all state-modifying
+ * self-checks should be consolidated into a single run_dev_self_checks()
+ * function with ONE call site and ONE guard, replacing the current
+ * scattered #ifdef KUMO_DEV_BUILD blocks that are too easy to overlook.
+ */
+
 /* ── Initialization order (HARD dependency — do not reorder) ── */
 
 /* ── External asm symbols ── */
@@ -393,8 +400,12 @@ static void on_mouse_move(int32_t dx, int32_t dy)
     }
     g_drag_move_diag++;
 
-    wm_mark_dirty(old_x, old_y, g_drag_win->w, g_drag_win->h);
-    wm_mark_dirty(g_drag_win->x, g_drag_win->y, g_drag_win->w, g_drag_win->h);
+    /* +1 accounts for the 1-px border drawn by draw_rect at x+w and y+h.
+     * Without it, old-position right/bottom border pixels are left behind
+     * as "stripe" artifacts after the window moves.
+     * See Decision-012 for the full debugging history. */
+    wm_mark_dirty(old_x, old_y, g_drag_win->w + 1, g_drag_win->h + 1);
+    wm_mark_dirty(g_drag_win->x, g_drag_win->y, g_drag_win->w + 1, g_drag_win->h + 1);
 }
 
 /* ── Phase 15: Two-phase click routing ──
@@ -884,7 +895,9 @@ void kmain(unsigned int magic, void *multiboot_info) {
      * system to prove isolation works at the hardware level.  It is NOT
      * included in the default (release) build.  Enable with:
      *   make DEV_BUILD=1
-     * or add -DKUMO_DEV_BUILD to CFLAGS. */
+     * or add -DKUMO_DEV_BUILD to CFLAGS.
+     *
+     * Included only in DEV_BUILD builds (make DEV_BUILD=1). */
 #ifdef KUMO_DEV_BUILD
     serial_write_string("\n=== Phase 12: Isolation verification ===\n");
     {
@@ -906,7 +919,7 @@ void kmain(unsigned int magic, void *multiboot_info) {
         serial_write_hex(pb ? pb->id : 0);
         serial_write_string("\n");
     }
-#endif
+#endif /* KUMO_DEV_BUILD */
 
     /* Drain any PS/2 mouse bytes that arrived after mouse_init.
      * The mouse starts streaming after Enable Reporting and may have
@@ -919,6 +932,7 @@ void kmain(unsigned int magic, void *multiboot_info) {
     for (;;) {
         if (wm_has_dirty())
             wm_flush_dirty();
+
         task_yield();
     }
 }

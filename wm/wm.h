@@ -16,6 +16,7 @@ void      wm_bring_to_top(window_t *win);
 
 /* Phase 17: close button */
 void wm_remove_window(window_t *win);
+int  wm_is_window_active(window_t *win);
 
 /* Phase 18: damage tracking — incremental redraw (drag only) */
 int  wm_has_dirty(void);
