@@ -1042,3 +1042,143 @@ gfx/
 kernel/
   main.c             — +拖动状态机, +on_mouse_move(), +坐标钳制, +诊断输出
 ```
+
+## 阶段 17：窗口关闭按钮 ✓ (2026-07-13)
+
+### 功能实现
+
+- [x] 关闭按钮（18×18 红色方块 + 白色 "X"），位于标题栏右上角
+  - `CLOSE_BTN_SIZE=18`, `CLOSE_BTN_MARGIN=4`
+  - `window_hit_test_close_button()` — 关闭按钮命中检测
+- [x] `wm_remove_window(win)` — 从 Z 序数组移除窗口 + `wm_draw_all()` 全量重绘
+- [x] `wm_is_window_active(win)` — 检查窗口是否仍在 Z 序数组中
+- [x] 4 项关闭自检：
+  - 关闭中间窗口（Demo B）验证 Z 序数组收缩正确
+  - 点击已关闭窗口的旧位置 → "no window hit"
+  - 拖动 A 过程中关闭不同的窗口 C（拖动不受影响）
+  - 关闭正在拖动的窗口自身（g_drag_win 安全清空）
+
+### 幽灵光标修复 (commit 0a9b9a2)
+
+- [x] **症状**：VNC 启动后画面左上角 (0,0) 短暂出现一个白色方块（鼠标光标）
+- [x] **根因**：`mouse_init()` 在第一次 `wm_draw_all()` **之后**调用。
+  `cursor_x/y` 在 `.bss` 中初始化为 (0,0)，第一次 `wm_draw_all()` 执行
+  `mouse_cursor_hide()` 时 `cursor_save()` 读取的是 (0,0) 处的背景像素，
+  `cursor_show()` 时画出白色箭头覆盖在左上角的桌面背景上
+- [x] **修复**：`mouse_init()` 移到第一次 `wm_draw_all()` **之前**，
+  确保光标坐标已初始化为屏幕中心 (512, 384)
+
+### 自检代码 gate 规则（Decision-009，第三次复发）
+
+- [x] **问题**：Phase 17 自检在默认构建中执行后，三个 Demo 窗口全部从 Z 序
+  数组中永久移除。这是 Decision-009 规则的**第三次**违反（Phase 15 计算器
+  显示 "8"、Phase 16 移动 Demo A、Phase 17 关闭所有窗口）
+- [x] **修复**：Phase 15/16/17 自检全部用 `#ifdef KUMO_DEV_BUILD` gate
+- [x] **规则明确化**：Decision-009 增加了规则边界表（HALT/修改 UI/核心检查/
+  初始绘制/初始化/诊断输出的分类）
+- [x] **遗留技术债**：各阶段自检散落在 `kmain()` 的不同位置，需要统一重构为
+  一个 `run_dev_self_checks()` 函数（未来专门安排一次重构）
+
+### 文件清单
+
+```
+wm/
+  window.h           — +CLOSE_BTN_SIZE/MARGIN, +window_hit_test_close_button()
+  window.c           — +关闭按钮绘制（红色 fill_rect + 白色 "X" draw_string）
+  wm.h               — +wm_remove_window(), +wm_is_window_active()
+  wm.c               — +wm_remove_window(), +wm_is_window_active()
+app/
+  calc.c             — +wm_is_window_active 守卫（防止关闭后幽灵按钮点击）
+kernel/
+  main.c             — 关闭按钮检查（drag 前优先级），鼠标释放时清除拖拽状态
+docs/
+  decisions.md       — +Decision-009 自检 gate 规则（规则定义+边界表+执行方式）
+```
+
+## 阶段 18：Damage Tracking（增量脏矩形重绘）✓ (2026-07-15)
+
+阶段 18 是整个 GUI 主线中排查过程最曲折的阶段。从最初实现到最终定位根因，
+经历了：系统卡死 → 排除法定位 → 架构调整 → 残影误判 → 诊断系统搭建 →
+交叉验证失效 → 方向转换 → 真正根因定位。完整过程记录在 Decision-011 和
+Decision-012。
+
+### 架构决策：idle-loop 延迟重绘（Decision-011）
+
+- [x] **放弃 IRQ12 同步绘制**：原始方案在 IRQ12 中断上下文（IF=0）中执行
+  `wm_flush_dirty()`，第一次尝试即导致系统卡死
+- [x] **卡死诊断过程**（commit 96dbb06）：
+  - test-1：禁用 flush 中的 cursor_hide/show → 不卡死但出现条纹残影
+  - test-2：额外禁用 IRQ12 handler 中的 cursor_draw/restore → 再次卡死
+  - 关键发现：>50% 面积的 `wm_draw_all()` 回退路径从未被 `#if 0` 保护
+  - **结论**：卡死根因从未被完全定位（可能涉及长时间 IF=0 导致 PS/2 数据丢失
+    或 cursor_backup 状态污染），当前方案通过架构调整规避问题
+- [x] **新架构**：
+  ```
+  IRQ12 handler:  cursor_restore/draw（照常） + on_mouse_move → wm_mark_dirty (O(1), 不绘制)
+  idle loop:     if (wm_has_dirty()) wm_flush_dirty()（内部 cli 保护绘制序列）
+  ```
+- [x] **Snapshot-and-clear 模式**：`wm_flush_dirty()` 在 cli 下原子快照 `g_dirty`
+  到局部变量并立即清空 valid，后续所有绘制使用局部快照
+- [x] **>50% 回退路径删除**：原 `area > screen/2 → wm_draw_all()` 被移除，
+  消除脏矩形 49%→51% 时代码路径的不连续跳变
+
+### 脏矩形追踪实现
+
+- [x] `wm_mark_dirty(x, y, w, h)` — O(1) AABB 合并（首次覆盖 → 后续单调扩张）
+- [x] `wm_has_dirty()` — 空闲循环检查是否有待刷新的脏矩形
+- [x] `wm_flush_dirty()` — cli 保护的增量重绘：
+  1. 快照 + 清空 g_dirty（cli 临界区 <1μs）
+  2. 长时间 cli 临界区：cursor_hide → fill_rect(desktop) → 遍历窗口做相交检测 →
+     window_draw + on_redraw → cursor_show
+- [x] 帧缓冲边界裁剪：`wm_mark_dirty` 和 `fill_rect` 都对越界坐标做安全裁剪
+
+### 条纹残影排查（Decision-012）
+
+- [x] **诊断系统搭建**：独立 AABB 累加器 `g_cycle` + 空闲循环交叉验证
+  - 第一轮：两种虚假 COVERAGE GAP（未裁剪 + 竞态条件）→ 全部修复
+  - 第二轮：累加器移入 wm.c，与 g_dirty 在同一个 cli 下原子快照
+  - VNC 真实抖动拖拽测试：expected 与 actual **完全一致**，零次 COVERAGE GAP
+- [x] **方向转换**：DIAG 证明 AABB 合并逻辑完全正确 → 问题在绘制执行本身
+- [x] **根因定位**：`draw_rect`（边框，包含两端点，覆盖 w+1×h+1 像素）与
+  `fill_rect`（填充，[x,x+w) 半开区间，覆盖 w×h 像素）的 **1 像素语义不一致**
+  - `on_mouse_move()` 标记 `wm_mark_dirty(old_x, old_y, win->w, win->h)` →
+    只覆盖 w×h 像素，漏掉了旧窗口右侧列 (x=old_x+w) 和底部行 (y=old_y+h)
+    的 1 像素边框
+  - 窗口移走后，这 1 像素边框残留形成条纹残影
+- [x] **修复**：`wm_mark_dirty` 使用 `w+1, h+1`
+- [x] **方法论教训**：交叉验证的两套"独立"计算共享了同一个错误输入源 (win->w)，
+  导致它们"一致地错误"——这类 bug 对交叉验证天然免疫。详见 Decision-012。
+
+### 附带修复
+
+- [x] **幽灵按钮**：`calc_handle_click()` 增加 `wm_is_window_active()` 守卫，
+  关闭计算器后点击原位置不再触发按钮绘制
+
+### 诊断代码清理
+
+- [x] Phase 18 诊断代码（`g_cycle`、`wm_mark_cycle()`、`wm_get_last_cycle()`、
+  `g_last_snap`、`wm_get_last_snap()`）在根因定位完成后全部移除
+- [x] `PHASE18_DIAG_MODE` 开关从 Makefile 和所有源文件中移除
+- [x] DEV_BUILD 自检（Phase 12/15/16/17）恢复正常执行，回归通过
+
+### GUI 路线图里程碑（补充阶段 17-18）
+
+| 阶段 | 内容 | 核心交付 |
+|------|------|---------|
+| 17 | 窗口关闭按钮 | X 按钮 + wm_remove_window + 幽灵按钮修复 + Decision-009 gate 规则 |
+| 18 | Damage Tracking | idle-loop 延迟重绘 + 脏矩形 AABB 合并 + 条纹残影根因定位 + Decision-011/012 |
+
+### 文件清单
+
+```
+wm/
+  wm.h               — +wm_mark_dirty(), wm_has_dirty(), wm_flush_dirty()
+  wm.c               — +脏矩形状态 g_dirty, +AABB 合并逻辑, +snapshot-and-clear,
+                        +cli 保护增量重绘（fill_rect + 遍历窗口相交检测）
+kernel/
+  main.c             — on_mouse_move() 改为 wm_mark_dirty (w+1,h+1),
+                        空闲循环改为 wm_has_dirty()→wm_flush_dirty()
+docs/
+  decisions.md       — +Decision-011（idle-loop 延迟重绘架构 + 卡死诊断时间线）,
+                        +Decision-012（条纹残影完整排查 + 交叉验证失效方法论教训）
+```
